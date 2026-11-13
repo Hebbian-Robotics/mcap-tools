@@ -299,3 +299,36 @@ def test_cli_exports_the_exact_requested_topic(tmp_path: Path) -> None:
     assert metadata["camera_topic"] == "/camera/back"
     assert metadata["start_timestamp_ns"] == CAMERA_START_NS
     assert metadata["duration_millis"] == SOURCE_DURATION_MILLIS
+
+
+def test_exports_a_rust_written_recording_with_separate_telemetry(tmp_path: Path) -> None:
+    from hebbian_mcap import (
+        COMPRESSED_VIDEO_SCHEMA,
+        NO_SCHEMA_ID,
+        GroupedMcapWriter,
+        encode_compressed_video,
+    )
+
+    source = tmp_path / "native-recording.mcap"
+    with GroupedMcapWriter(source) as writer:
+        schema_id = writer.register_schema(
+            "foxglove.CompressedVideo", "protobuf", COMPRESSED_VIDEO_SCHEMA
+        )
+        video_channel = writer.register_channel(
+            "/cameras/front/video", "protobuf", schema_id, group="video"
+        )
+        telemetry_channel = writer.register_channel(
+            "/state", "json", NO_SCHEMA_ID, group="telemetry"
+        )
+        for timestamp, packet in zip(FRAME_TIMES_NS, _h264_packets(), strict=True):
+            log_time = CAMERA_START_NS + timestamp
+            writer.write_message(telemetry_channel, log_time, b'{"position": 0.5}')
+            writer.write_message(
+                video_channel, log_time, encode_compressed_video(log_time, "front", packet, "h264")
+            )
+    result = export_mcap_camera(source, tmp_path / "native.mp4", limits=LIMITS)
+    assert result.camera_topic == "/cameras/front/video"
+    assert result.start_timestamp_ns == CAMERA_START_NS
+    assert result.duration_millis == SOURCE_DURATION_MILLIS
+    with av.open(result.video_path) as output:
+        assert len(list(output.decode(video=0))) == len(FRAME_TIMES_NS)
