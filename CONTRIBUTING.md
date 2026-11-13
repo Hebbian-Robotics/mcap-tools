@@ -26,7 +26,10 @@ The `publish.yml` workflow builds Linux (glibc 2.17+, x86_64/aarch64), macOS
 The Intel macOS wheel is cross-compiled; native tests run on the ARM runner.
 Set up a PyPI pending trusted publisher for project `hebbian-mcap`, owner
 `Hebbian-Robotics`, repository `mcap-tools`, workflow `publish.yml`, environment
-`pypi`. No API token is needed. Create a matching GitHub `pypi` environment.
+`pypi`. No API token is needed with trusted publishing. Create a matching GitHub
+`pypi` environment. Alternatively, configure its `PYPI_API_TOKEN` secret; the
+workflow uses that token when present and otherwise uses trusted publishing.
+Token-based uploads disable OIDC attestations.
 
 Run the workflow manually without publishing to inspect artifacts. To publish,
 use its `publish` input or push a `v<package-version>` tag. All wheel builds must
