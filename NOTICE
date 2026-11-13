@@ -1,0 +1,8 @@
+mcap-tools
+Copyright 2026 Hebbian Robotics
+
+The extracted Rust JointState encoder and CompressedVideo definition are also
+available under MIT; see LICENSE-MIT. Other project code is Apache-2.0.
+
+The Foxglove CompressedVideo descriptor derives from foxglove/schemas (MIT).
+See crates/mcap-tools/schemas/LICENSE for the upstream copyright and license.

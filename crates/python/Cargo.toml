@@ -1,0 +1,20 @@
+[package]
+name = "hebbian-mcap-python"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Python bindings for the shared MCAP tools core"
+
+[lib]
+name = "_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+hebbian-mcap = { path = "../mcap-tools" }
+pyo3 = { version = "0.29", features = ["abi3-py311"] }
+
+[lints]
+workspace = true

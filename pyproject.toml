@@ -1,0 +1,40 @@
+[project]
+name = "hebbian-mcap"
+version = "0.1.0"
+description = "MCAP tools with a shared Rust core"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE", "LICENSE-MIT", "NOTICE", "crates/mcap-tools/schemas/LICENSE"]
+readme = "README.md"
+authors = [{ name = "Hebbian Robotics" }]
+
+[project.urls]
+Repository = "https://github.com/Hebbian-Robotics/mcap-tools"
+
+[dependency-groups]
+dev = ["maturin>=1.9,<2", "mcap>=1.4", "mcap-protobuf-support>=0.5.4", "mcap-ros2-support>=0.5.7", "pytest>=9", "ruff>=0.16", "ty>=0.0.74"]
+
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[tool.maturin]
+manifest-path = "crates/python/Cargo.toml"
+python-source = "python"
+module-name = "hebbian_mcap._native"
+features = ["pyo3/extension-module"]
+
+[tool.uv]
+cache-keys = [{ file = "pyproject.toml" }, { file = "Cargo.toml" }, { file = "Cargo.lock" }, { file = "crates/**/*.rs" }, { file = "crates/**/Cargo.toml" }, { file = "python/**/*.py" }, { file = "python/**/*.pyi" }, { file = "crates/**/schemas/*" }]
+exclude-newer = "5 days"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "C4", "UP", "ANN", "PTH", "RET", "SIM", "RUF"]
+ignore = ["E501", "ANN401"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
