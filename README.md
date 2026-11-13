@@ -34,24 +34,31 @@ in chunks with no messages; consumers should use message indexes for selective r
 
 ## Installation and development
 
-Until packages are released, use a Git dependency pinned to a commit. Python source
-installs require a Rust toolchain; CI builds and smoke-tests native wheels for Linux, macOS,
-and Windows. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Install the Python package from PyPI:
 
 ```sh
-uv add 'hebbian-mcap @ git+https://github.com/Hebbian-Robotics/mcap-tools@COMMIT'
+uv add 'hebbian-mcap==0.1.0'
 ```
 
-Packages are not yet published to PyPI or crates.io. A source installation needs
-Rust 1.92+. Publish the Python wheels before a consumer declares a released
-PyPI dependency on this package.
+Prebuilt CPython 3.11+ wheels support Linux (glibc 2.17+, x86_64/aarch64),
+macOS (x86_64/aarch64), and Windows (x86_64). These installs do not need Rust.
+Source builds require Rust 1.92+. See [CONTRIBUTING.md](CONTRIBUTING.md) for
+native development and release instructions.
+
+The Rust crate is available through a Git dependency pinned to a revision; it is
+not yet published to crates.io.
 
 The Python module is `hebbian_mcap`; the Rust library is `hebbian_mcap`.
 The official Python `mcap` reader remains compatible and is not replaced.
 
 ## Optional camera export
 
-Install `hebbian-mcap[video]` to export a selected camera to MP4:
+Install the optional dependencies to export a selected camera to MP4:
+
+```sh
+uv add 'hebbian-mcap[video]==0.1.0'
+```
+
 
 ```python
 from pathlib import Path
