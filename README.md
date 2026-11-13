@@ -49,7 +49,38 @@ PyPI dependency on this package.
 The Python module is `hebbian_mcap`; the Rust library is `hebbian_mcap`.
 The official Python `mcap` reader remains compatible and is not replaced.
 
-Video export is a separate follow-up: codec dependencies are intentionally absent
-from the initial shared writer and message-encoding core.
+## Optional camera export
+
+Install `hebbian-mcap[video]` to export a selected camera to MP4:
+
+```python
+from pathlib import Path
+from hebbian_mcap.video import export_mcap_camera
+
+result = export_mcap_camera(
+    Path("recording.mcap"), Path("front.mp4"), camera_topic="/cameras/front/video"
+)
+```
+
+```sh
+mcap-export recording.mcap front.mp4 --topic /cameras/front/video
+```
+
+The exporter reads standard Foxglove video/image and ROS 2 camera schemas using
+JSON, protobuf, or CDR messages. H.264 without B-frames is remuxed, with lossless
+AUD repair when needed. Supported raw RGB/gray and JPEG/PNG frames are encoded as
+lossless RGB H.264. Original log-time gaps are preserved to microsecond precision;
+the final frame repeats the preceding interval. At least two frames are required.
+Select an exact topic when more than one camera is declared. Source recordings
+and existing destination files are preserved on failure.
+
+`CameraExportLimits` bounds frame dimensions, duration and average frame rate.
+Native decoding is synchronous; callers own process isolation when they need a
+hard deadline. `PreparedMcapVideo` reports the selected topic, original first log
+time, exported duration and output path.
+
+Only the `[video]` extra installs PyAV, NumPy and MCAP message decoders. The Rust
+crate and default Python writer do not depend on video codecs. The H.264 inspection
+helpers in `hebbian_mcap.h264` use only the Python standard library.
 
 Licensed under [Apache-2.0](LICENSE); see [NOTICE](NOTICE) for schema attribution.

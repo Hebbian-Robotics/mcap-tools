@@ -44,4 +44,4 @@ jobs:
           uv run maturin build --release --locked --out dist
           uv venv wheel-test
           uv pip install --python wheel-test dist/*.whl
-          uv run --python wheel-test --no-project python -c 'from io import BytesIO; from hebbian_mcap import GroupedMcapWriter; stream = BytesIO(); writer = GroupedMcapWriter(stream); writer.finish(); assert stream.getvalue().endswith(b"MCAP0\r\n")'
+          uv run --python wheel-test --no-project python -c 'from importlib.util import find_spec; assert find_spec("av") is None and find_spec("numpy") is None; from io import BytesIO; from hebbian_mcap import GroupedMcapWriter; stream = BytesIO(); writer = GroupedMcapWriter(stream); writer.finish(); assert stream.getvalue().endswith(b"MCAP0\r\n")'
