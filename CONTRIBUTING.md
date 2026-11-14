@@ -32,6 +32,19 @@ compatible releases are selected for other Python versions.
 Keep unwinding enabled for the PyO3 boundary. Linker and sccache settings stay
 machine-local so portable wheel builds do not require a particular linker.
 
+## CI scope and caching
+
+Documentation-only changes run local link checks. Other changes retain the
+Linux/macOS/Windows matrix on Python 3.11 and 3.14, including Python tests and
+wheel smoke tests. Manual workflow runs always exercise the full matrix.
+Superseded validation runs are cancelled; release workflows are unaffected.
+
+Rust dependency artifacts are cached by platform, Python version, toolchain and
+compiler environment. uv also caches downloads and builds; its local-project
+fingerprints still invalidate changed Rust/Python sources. Only main-branch jobs
+save these caches. A cold run still builds dependencies; cache hits never skip
+checks or wheel validation.
+
 ## Write documentation
 
 Follow the [Google developer documentation style guide](https://developers.google.com/style/highlights).
