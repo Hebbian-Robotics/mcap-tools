@@ -5,7 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Grouped MCAP writing and standard robotics message encodings"
+description = "MCAP writer with grouped chunks and standard ROS 2 JointState and Foxglove video encodings"
+keywords = ["mcap", "robotics", "ros2", "foxglove", "video"]
+categories = ["encoding", "multimedia::video"]
+readme = "README.md"
 
 [dependencies]
 mcap = "=0.26.0"

@@ -1,7 +1,16 @@
 [project]
 name = "hebbian-mcap"
 version = "0.1.0"
-description = "MCAP tools with a shared Rust core"
+description = "Rust-backed MCAP writer for Python with grouped chunks, ROS 2/Foxglove encodings, and optional MCAP-to-MP4 video export"
+keywords = ["mcap", "robotics", "ros2", "foxglove", "video", "rust", "pyo3"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Rust",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Software Development :: Libraries",
+]
 requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE", "LICENSE-MIT", "NOTICE", "crates/mcap-tools/schemas/LICENSE"]
@@ -15,6 +24,8 @@ video = ["av>=18.1.0", "numpy>=2.3.5", "mcap>=1.4.0", "mcap-protobuf-support>=0.
 mcap-export = "hebbian_mcap.cli:main"
 
 [project.urls]
+Documentation = "https://github.com/Hebbian-Robotics/mcap-tools#readme"
+Issues = "https://github.com/Hebbian-Robotics/mcap-tools/issues"
 Repository = "https://github.com/Hebbian-Robotics/mcap-tools"
 
 [dependency-groups]
