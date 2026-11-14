@@ -37,7 +37,9 @@ machine-local so portable wheel builds do not require a particular linker.
 Documentation-only changes run local link checks. Other changes retain the
 Linux/macOS/Windows matrix on Python 3.11 and 3.14, including Python tests and
 wheel smoke tests. Manual workflow runs always exercise the full matrix.
-Superseded validation runs are cancelled; release workflows are unaffected.
+Superseded pull-request runs are cancelled; main runs finish independently so a
+later documentation-only push cannot cancel outstanding code checks. Release
+workflows are unaffected.
 
 Rust dependency artifacts are cached by platform, Python version, toolchain and
 compiler environment. uv also caches downloads and builds; its local-project
