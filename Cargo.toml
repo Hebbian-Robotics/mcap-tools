@@ -19,5 +19,7 @@ missing_panics_doc = "allow"
 debug = "line-tables-only"
 
 [profile.release]
+# PyO3 catches Rust panics; preserve unwinding at the Python boundary.
 lto = "thin"
+codegen-units = 1
 strip = true

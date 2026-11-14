@@ -1,12 +1,13 @@
 # Contributing
 
-Install Rust 1.92+ and uv. Run `uv sync` to build the Python extension locally.
-Rust changes require rebuilding the extension with `uv run maturin develop`.
+Install Rust 1.92+ and uv, then run `uv sync`. Python 3.11 remains the minimum;
+the extension uses Maturin and PyO3 ABI3 wheels. After Rust changes, rebuild the
+local extension with `uv run maturin develop`.
 
-Validate with:
+## Validate changes
 
 ```sh
-cargo fmt --all --check
+cargo fmt
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test
 uv run ruff check --fix
@@ -15,23 +16,35 @@ uv run ty check
 uv run pytest
 ```
 
-Keep Python >=3.11 support and typed public APIs. Test observable behavior using
-standard MCAP readers rather than asserting Rust/Python implementation details.
-Contributions are distributed under Apache-2.0.
+Use typed public APIs and descriptive names. Test observable results with real
+MCAP readers. The Rust writer owns grouping; upstream MCAP owns serialization.
+Python adapts streams and atomic path publication rather than duplicating the
+file format. Keep the package independent of its consumers.
 
-## Python releases
+## Update dependencies
 
-The `publish.yml` workflow builds Linux (glibc 2.17+, x86_64/aarch64), macOS
-(x86_64/aarch64), and Windows (x86_64) ABI3 wheels for CPython 3.11+.
-The Intel macOS wheel is cross-compiled; native tests run on the ARM runner.
-Set up a PyPI pending trusted publisher for project `hebbian-mcap`, owner
-`Hebbian-Robotics`, repository `mcap-tools`, workflow `publish.yml`, environment
-`pypi`. No API token is needed with trusted publishing. Create a matching GitHub
-`pypi` environment. Alternatively, configure its `PYPI_API_TOKEN` secret; the
-workflow uses that token when present and otherwise uses trusted publishing.
-Token-based uploads disable OIDC attestations.
+Review Rust candidates with `cargo upgrade --dry-run --incompatible --pinned`.
+Use `cargo update` and `uv lock --upgrade` to refresh resolutions, then validate
+and review lockfile changes. Python resolution retains a five-day release-age
+guard. Lower bounds for video extras preserve Python 3.11 compatibility; newer
+compatible releases are selected for other Python versions.
 
-Run the workflow manually without publishing to inspect artifacts. To publish,
-use its `publish` input or push a `v<package-version>` tag. All wheel builds must
-succeed before publishing. After release, verify a clean consumer install with
-`uv pip install --only-binary :all: hebbian-mcap` before removing Git source pins.
+Keep unwinding enabled for the PyO3 boundary. Linker and sccache settings stay
+machine-local so portable wheel builds do not require a particular linker.
+
+## Write documentation
+
+Follow the [Google developer documentation style guide](https://developers.google.com/style/highlights).
+Keep the README focused on installation and common tasks. Put detailed buffering,
+lifecycle and export rules in [the behavior reference](docs/behavior.md). Use
+sentence-case headings and descriptive links to official specifications and APIs.
+
+Check local links with `lychee --offline --include-fragments=anchor-only README.md
+CONTRIBUTING.md docs/*.md crates/mcap-tools/README.md`. Remove `--offline` to
+check external references. Link checking does not check spelling.
+
+## Release and commit history
+
+See [Python releases](docs/releases.md) for wheel builds and publishing. Squash
+fixup commits before merging when useful; preserve revisions used by published
+packages and Git-pinned consumers. Contributions use [Apache-2.0](LICENSE).

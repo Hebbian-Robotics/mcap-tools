@@ -36,6 +36,7 @@ requires = ["maturin>=1.9,<2"]
 build-backend = "maturin"
 
 [tool.maturin]
+include = [{ path = "docs/*.md", format = "sdist" }]
 manifest-path = "crates/python/Cargo.toml"
 python-source = "python"
 module-name = "hebbian_mcap._native"
@@ -50,8 +51,18 @@ line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "W", "F", "I", "B", "C4", "UP", "ANN", "PTH", "RET", "SIM", "RUF"]
+select = ["E", "W", "F", "I", "B", "C4", "UP", "ANN", "PTH", "RET", "SIM", "TID", "RUF"]
 ignore = ["E501", "ANN401"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.ty.rules]
+division-by-zero = "error"
+deprecated = "error"
+unused-ignore-comment = "error"
+possibly-unresolved-reference = "error"

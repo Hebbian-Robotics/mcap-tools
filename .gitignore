@@ -6,3 +6,11 @@ __pycache__/
 *.so
 *.pyd
 /dist/
+
+.DS_Store
+.env
+.env.*
+!.env.example
+*.pyc
+*.egg-info/
+.ty_cache/
