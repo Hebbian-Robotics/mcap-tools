@@ -76,7 +76,8 @@ standard-library-only Annex B inspection and repair helpers.
 - [Contributing](https://github.com/Hebbian-Robotics/mcap-tools/blob/main/CONTRIBUTING.md): validation, dependency updates and releases.
 - [LiveKit Cameras](https://github.com/Hebbian-Robotics/livekit-cameras): browser/native camera streaming and H.264 recording primitives.
 
-[Apache-2.0 license](https://github.com/Hebbian-Robotics/mcap-tools/blob/main/LICENSE). See [NOTICE](https://github.com/Hebbian-Robotics/mcap-tools/blob/main/NOTICE) for schema attribution.
+Rust/Python code uses [Apache-2.0](https://github.com/Hebbian-Robotics/mcap-tools/blob/main/LICENSE), with MIT exceptions described in
+[NOTICE](https://github.com/Hebbian-Robotics/mcap-tools/blob/main/NOTICE). Browser utilities use [MIT](LICENSE-MIT).
 
 ## Browser playback
 
