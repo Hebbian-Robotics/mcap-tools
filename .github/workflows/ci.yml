@@ -1,4 +1,4 @@
-name: Validate Rust and Python
+name: Validate libraries
 on:
   push:
     branches: [main]
@@ -17,6 +17,7 @@ jobs:
       pull-requests: read
     outputs:
       code: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.code == 'true' }}
+      browser: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.browser == 'true' }}
       docs: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.docs == 'true' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -33,6 +34,21 @@ jobs:
               - '!**/*.md'
               - '!LICENSE*'
               - '!NOTICE*'
+              - '!typescript/**'
+              - '!package.json'
+              - '!pnpm-lock.yaml'
+              - '!pnpm-workspace.yaml'
+              - '!tsconfig.json'
+              - '!biome.json'
+              - '!.nvmrc'
+            browser:
+              - 'typescript/**'
+              - 'package.json'
+              - 'pnpm-*.yaml'
+              - 'tsconfig.json'
+              - 'biome.json'
+              - '.nvmrc'
+              - '.github/workflows/ci.yml'
             docs:
               - '**/*.md'
               - 'LICENSE*'
@@ -48,7 +64,7 @@ jobs:
       - uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
         with:
           output: ${{ runner.temp }}/documentation-links.md
-          args: --offline --include-fragments=anchor-only README.md CONTRIBUTING.md docs/*.md crates/mcap-tools/README.md
+          args: --offline --include-fragments=anchor-only README.md CONTRIBUTING.md docs/*.md crates/mcap-tools/README.md typescript/README.md
   native:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -98,3 +114,22 @@ jobs:
           uv venv wheel-test
           uv pip install --python wheel-test dist/*.whl
           uv run --python wheel-test --no-project python -c 'from importlib.util import find_spec; assert find_spec("av") is None and find_spec("numpy") is None; from io import BytesIO; from hebbian_mcap import GroupedMcapWriter; stream = BytesIO(); writer = GroupedMcapWriter(stream); writer.finish(); assert stream.getvalue().endswith(b"MCAP0\r\n")'
+
+  browser:
+    needs: changes
+    if: needs.changes.outputs.browser == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - name: Check distribution contents
+        run: pnpm pack --out /tmp/hebbian-mcap-tools.tgz

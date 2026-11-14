@@ -6,3 +6,7 @@ available under MIT; see LICENSE-MIT. Other project code is Apache-2.0.
 
 The Foxglove CompressedVideo descriptor derives from foxglove/schemas (MIT).
 See crates/mcap-tools/schemas/LICENSE for the upstream copyright and license.
+
+Browser playback utilities were extracted from Hebbian Robotics RUA
+(source revision e236d88b64a2b77098c11b2c28a45d6d12f059e9) under MIT;
+see LICENSE-MIT.

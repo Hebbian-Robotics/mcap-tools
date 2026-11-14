@@ -1,0 +1,45 @@
+{
+  "name": "@hebbian/mcap-tools",
+  "version": "0.1.0",
+  "description": "Browser byte-range reading, capture-timed H.264 playback and synchronized recording clocks",
+  "type": "module",
+  "license": "MIT",
+  "author": "Hebbian Robotics",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Hebbian-Robotics/mcap-tools.git"
+  },
+  "engines": {
+    "node": ">=22.22"
+  },
+  "files": [
+    "typescript/src",
+    "LICENSE-MIT",
+    "NOTICE",
+    "typescript/README.md"
+  ],
+  "exports": {
+    "./http-range-readable": "./typescript/src/http-range-readable.ts",
+    "./compressed-video": "./typescript/src/compressed-video.ts",
+    "./playback-clock": "./typescript/src/playback-clock.ts"
+  },
+  "scripts": {
+    "format": "biome check --write .",
+    "lint": "biome check .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "pnpm lint && pnpm typecheck && pnpm test"
+  },
+  "dependencies": {
+    "@mcap/core": "^2.4.0",
+    "mediabunny": "^1.65.2"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.6",
+    "@types/node": "^26.6.6",
+    "typescript": "7.0.2",
+    "vitest": "^5.1.0",
+    "fzstd": "^0.1.1"
+  },
+  "packageManager": "pnpm@12.16.1"
+}

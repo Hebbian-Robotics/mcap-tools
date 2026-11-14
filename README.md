@@ -77,3 +77,9 @@ standard-library-only Annex B inspection and repair helpers.
 - [LiveKit Cameras](https://github.com/Hebbian-Robotics/livekit-cameras): browser/native camera streaming and H.264 recording primitives.
 
 [Apache-2.0 license](https://github.com/Hebbian-Robotics/mcap-tools/blob/main/LICENSE). See [NOTICE](https://github.com/Hebbian-Robotics/mcap-tools/blob/main/NOTICE) for schema attribution.
+
+## Browser playback
+
+The [TypeScript library](typescript/README.md) provides HTTP byte-range reading
+for MCAP, H.264 remuxing to MP4 and a shared playback clock for multiple cameras.
+It is independent of the Rust/Python writer and any robot application.

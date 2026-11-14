@@ -21,6 +21,17 @@ MCAP readers. The Rust writer owns grouping; upstream MCAP owns serialization.
 Python adapts streams and atomic path publication rather than duplicating the
 file format. Keep the package independent of its consumers.
 
+## Browser library
+
+Use Node 24 and the pnpm version pinned in `package.json`. Run `pnpm install`,
+then `pnpm format && pnpm check`. The TypeScript library ships source modules for
+bundlers; `pnpm pack` checks the package contents. Keep browser utilities free
+of consumer-specific topics, schemas and UI dependencies.
+
+Browser checks run once on Linux. Changes limited to browser source or its
+configuration skip the native OS/Python matrix; native changes retain existing
+platform coverage.
+
 ## Update dependencies
 
 Review Rust candidates with `cargo upgrade --dry-run --incompatible --pinned`.
@@ -34,7 +45,7 @@ machine-local so portable wheel builds do not require a particular linker.
 
 ## CI scope and caching
 
-Documentation-only changes run local link checks. Other changes retain the
+Documentation-only changes run local link checks. Native changes retain the
 Linux/macOS/Windows matrix on Python 3.11 and 3.14, including Python tests and
 wheel smoke tests. Manual workflow runs always exercise the full matrix.
 Superseded pull-request runs are cancelled; main runs finish independently so a
@@ -55,7 +66,7 @@ lifecycle and export rules in [the behavior reference](docs/behavior.md). Use
 sentence-case headings and descriptive links to official specifications and APIs.
 
 Check local links with `lychee --offline --include-fragments=anchor-only README.md
-CONTRIBUTING.md docs/*.md crates/mcap-tools/README.md`. Remove `--offline` to
+CONTRIBUTING.md docs/*.md crates/mcap-tools/README.md typescript/README.md`. Remove `--offline` to
 check external references. Link checking does not check spelling.
 
 ## Release and commit history
