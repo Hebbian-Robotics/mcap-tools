@@ -238,6 +238,35 @@ def test_joint_state_is_readable_as_standard_ros2_cdr() -> None:
     assert len(message.velocity) == len(message.effort) == 0
 
 
+def test_joint_state_carries_velocities_and_efforts() -> None:
+    decoder = Ros2DecoderFactory().decoder_for(
+        "cdr", Schema(1, JOINT_STATE_SCHEMA, "ros2msg", "sensor_msgs/msg/JointState")
+    )
+    assert decoder is not None
+    message = decoder(
+        encode_joint_state(
+            3_000_000_007,
+            "base",
+            ["shoulder", "elbow", "wrist"],
+            [0.25, -0.5, 1.0],
+            velocities=[0.1, 0.2, 0.3],
+            efforts=[4.0, 5.0, 6.0],
+        )
+    )
+    assert message.name == ["shoulder", "elbow", "wrist"]
+    assert list(message.position) == [0.25, -0.5, 1.0]
+    assert list(message.velocity) == [0.1, 0.2, 0.3]
+    assert list(message.effort) == [4.0, 5.0, 6.0]
+
+
+@pytest.mark.parametrize("field", ["velocities", "efforts"])
+def test_joint_state_rejects_a_velocity_or_effort_count_that_differs_from_the_joints(
+    field: str,
+) -> None:
+    with pytest.raises(ValueError):
+        encode_joint_state(0, "base", ["shoulder", "elbow"], [0.0, 0.0], **{field: [1.0]})
+
+
 @pytest.mark.parametrize(
     ("timestamp", "frame_id", "names", "positions"),
     [

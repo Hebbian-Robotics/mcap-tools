@@ -12,7 +12,7 @@ project, not an official Foxglove product.
 ## Install
 
 ```sh
-uv add 'hebbian-mcap==0.1.1'
+uv add 'hebbian-mcap==0.1.2'
 ```
 
 Prebuilt CPython 3.11+ wheels support Linux (glibc 2.17+, x86_64/aarch64),
@@ -62,7 +62,7 @@ through the channel's schema, so fields a recorder added are preserved. See
 Install the video extra, then select a camera topic:
 
 ```sh
-uv add 'hebbian-mcap[video]==0.1.1'
+uv add 'hebbian-mcap[video]==0.1.2'
 mcap-export recording.mcap front.mp4 --topic /cameras/front/video
 ```
 

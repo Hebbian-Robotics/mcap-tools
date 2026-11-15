@@ -25,6 +25,8 @@ The upstream writer owns format serialization; use the
 
 Message helpers encode ROS 2 `JointState` CDR and `CompressedVideo` as Foxglove
 protobuf or ROS 2 `foxglove_msgs/msg/CompressedVideo` CDR.
+A `JointState` always carries positions; velocities and efforts are each either
+omitted or given once per joint.
 
 `CompressedVideoCodec` reads and rewrites the video messages of one channel. Create
 it from the channel's `message_encoding` and its schema's encoding, name and data.
