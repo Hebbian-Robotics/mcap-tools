@@ -1,39 +1,47 @@
 //! Standard message definitions for interoperable MCAP recordings.
-use prost::Message;
+use std::str::FromStr;
+mod cdr;
+mod compressed_video;
 pub mod joint_state;
+mod ros2msg;
 
-#[derive(Clone, PartialEq, Message)]
-pub struct CompressedVideo {
-    #[prost(message, optional, tag = "1")]
-    pub timestamp: Option<prost_types::Timestamp>,
-    #[prost(string, tag = "2")]
-    pub frame_id: String,
-    #[prost(bytes = "vec", tag = "3")]
-    pub data: Vec<u8>,
-    #[prost(string, tag = "4")]
-    pub format: String,
+pub use compressed_video::{
+    CompressedVideo, CompressedVideoCodec, ROS2_VIDEO_SCHEMA, ROS2_VIDEO_SCHEMA_NAME, VIDEO_SCHEMA,
+    VIDEO_SCHEMA_NAME, encode_compressed_video,
+};
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum MessageError {
+    #[error("unsupported message encoding {0:?}; expected \"protobuf\" or \"cdr\"")]
+    UnsupportedEncoding(String),
+    #[error("unsupported schema: {0}")]
+    Schema(String),
+    #[error("malformed protobuf message: {0}")]
+    Protobuf(#[from] prost::DecodeError),
+    #[error("malformed protobuf message: {0}")]
+    ProtobufWire(&'static str),
+    #[error("malformed CDR message: {0}")]
+    Cdr(&'static str),
+    #[error("{0}")]
+    OutOfRange(&'static str),
 }
 
-pub const VIDEO_SCHEMA: &[u8] = include_bytes!("../schemas/CompressedVideo.bin");
+/// How an MCAP channel serializes its messages, named as the channel's
+/// `message_encoding` names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageEncoding {
+    Protobuf,
+    Cdr,
+}
 
-/// Encode one Foxglove `CompressedVideo` message. The payload is passed through.
-#[must_use]
-pub fn encode_compressed_video(
-    timestamp_nanoseconds: u64,
-    frame_id: &str,
-    data: &[u8],
-    format: &str,
-) -> Vec<u8> {
-    CompressedVideo {
-        timestamp: Some(prost_types::Timestamp {
-            seconds: i64::try_from(timestamp_nanoseconds / 1_000_000_000)
-                .expect("u64 nanoseconds fit i64 seconds"),
-            nanos: i32::try_from(timestamp_nanoseconds % 1_000_000_000)
-                .expect("subsecond nanos fit i32"),
-        }),
-        frame_id: frame_id.into(),
-        data: data.to_vec(),
-        format: format.into(),
+impl FromStr for MessageEncoding {
+    type Err = MessageError;
+
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
+        match name {
+            "protobuf" => Ok(Self::Protobuf),
+            "cdr" => Ok(Self::Cdr),
+            other => Err(MessageError::UnsupportedEncoding(other.to_owned())),
+        }
     }
-    .encode_to_vec()
 }

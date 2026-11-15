@@ -1,6 +1,6 @@
 [project]
 name = "hebbian-mcap"
-version = "0.1.0"
+version = "0.1.1"
 description = "Rust-backed MCAP writer for Python with grouped chunks, ROS 2/Foxglove encodings, and optional MCAP-to-MP4 video export"
 keywords = ["mcap", "robotics", "ros2", "foxglove", "video", "rust", "pyo3"]
 classifiers = [

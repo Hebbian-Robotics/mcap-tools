@@ -28,6 +28,7 @@ from mcap.records import Channel, Schema
 from mcap_protobuf.decoder import DecoderFactory as ProtobufDecoderFactory
 from mcap_ros2.decoder import DecoderFactory as Ros2DecoderFactory
 
+from ._native import COMPRESSED_VIDEO_SCHEMA_NAME, ROS2_COMPRESSED_VIDEO_SCHEMA_NAME
 from .h264 import (
     annex_b_nal_offsets_and_types,
     ensure_access_unit_delimiter,
@@ -36,7 +37,7 @@ from .h264 import (
 )
 
 PASSTHROUGH_VIDEO_SCHEMA_NAMES = frozenset(
-    {"foxglove.CompressedVideo", "foxglove_msgs/msg/CompressedVideo"}
+    {COMPRESSED_VIDEO_SCHEMA_NAME, ROS2_COMPRESSED_VIDEO_SCHEMA_NAME}
 )
 
 MAXIMUM_FRAME_BYTES = 32 * 1024 * 1024
