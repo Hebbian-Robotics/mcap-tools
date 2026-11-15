@@ -270,6 +270,7 @@ impl CompressedVideoCodec {
 }
 
 #[pyfunction]
+#[pyo3(signature = (timestamp_nanoseconds, frame_id, names, positions, velocities = Vec::new(), efforts = Vec::new()))]
 #[allow(clippy::needless_pass_by_value)]
 fn encode_joint_state<'python>(
     python: Python<'python>,
@@ -277,12 +278,16 @@ fn encode_joint_state<'python>(
     frame_id: &str,
     names: Vec<String>,
     positions: Vec<f64>,
+    velocities: Vec<f64>,
+    efforts: Vec<f64>,
 ) -> PyResult<Bound<'python, PyBytes>> {
     let data = hebbian_mcap::messages::joint_state::encode(
         timestamp_nanoseconds,
         frame_id,
         &names,
         &positions,
+        &velocities,
+        &efforts,
     )
     .map_err(|error| PyValueError::new_err(error.to_string()))?;
     Ok(PyBytes::new(python, &data))

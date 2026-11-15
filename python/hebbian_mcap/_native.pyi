@@ -61,5 +61,10 @@ def encode_compressed_video(
     message_encoding: str = "protobuf",
 ) -> bytes: ...
 def encode_joint_state(
-    timestamp_nanoseconds: int, frame_id: str, names: list[str], positions: list[float]
+    timestamp_nanoseconds: int,
+    frame_id: str,
+    names: list[str],
+    positions: list[float],
+    velocities: list[float] = [],
+    efforts: list[float] = [],
 ) -> bytes: ...

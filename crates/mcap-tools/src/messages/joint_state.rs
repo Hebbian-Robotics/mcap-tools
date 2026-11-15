@@ -21,12 +21,15 @@ uint32 nanosec
 use super::cdr::CdrWriter;
 
 /// One `JointState` stamped `timestamp_nanoseconds` after the Unix epoch, with
-/// positions in radians and no velocity or effort.
+/// positions in radians. Velocities (radians per second) and efforts are each
+/// either empty or one per joint.
 pub fn encode(
     timestamp_nanoseconds: u64,
     frame_id: &str,
     names: &[String],
     positions: &[f64],
+    velocities: &[f64],
+    efforts: &[f64],
 ) -> std::io::Result<Vec<u8>> {
     let invalid_input = |message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message);
     let seconds = i32::try_from(timestamp_nanoseconds / 1_000_000_000)
@@ -34,6 +37,14 @@ pub fn encode(
     if names.len() != positions.len() {
         return Err(invalid_input(
             "JointState names and positions must have equal lengths",
+        ));
+    }
+    if [velocities, efforts]
+        .iter()
+        .any(|values| !values.is_empty() && values.len() != names.len())
+    {
+        return Err(invalid_input(
+            "JointState velocities and efforts must be empty or have one value per joint",
         ));
     }
     for length in std::iter::once(names.len())
@@ -57,8 +68,8 @@ pub fn encode(
         cdr.write_string(name);
     }
     cdr.write_doubles(positions);
-    cdr.write_doubles(&[]);
-    cdr.write_doubles(&[]);
+    cdr.write_doubles(velocities);
+    cdr.write_doubles(efforts);
     Ok(cdr.into_bytes())
 }
 
@@ -68,7 +79,7 @@ mod tests {
 
     #[test]
     fn layout_follows_cdr_alignment() {
-        let bytes = encode(3_000_000_007, "x", &["a".to_owned()], &[1.0]).unwrap();
+        let bytes = encode(3_000_000_007, "x", &["a".to_owned()], &[1.0], &[], &[2.0]).unwrap();
         let mut expected = vec![0, 1, 0, 0]; // little-endian CDR
         expected.extend_from_slice(&3_i32.to_le_bytes()); // stamp.sec
         expected.extend_from_slice(&7_u32.to_le_bytes()); // stamp.nanosec
@@ -78,7 +89,8 @@ mod tests {
         expected.extend_from_slice(&[1, 0, 0, 0]); // one position, already 8-aligned after it
         expected.extend_from_slice(&1.0_f64.to_le_bytes());
         expected.extend_from_slice(&[0, 0, 0, 0]); // no velocity
-        expected.extend_from_slice(&[0, 0, 0, 0]); // no effort
+        expected.extend_from_slice(&[1, 0, 0, 0]); // one effort, already 8-aligned after it
+        expected.extend_from_slice(&2.0_f64.to_le_bytes());
         assert_eq!(bytes, expected);
     }
 }
