@@ -7,8 +7,9 @@ indexed readers can select the data they need. Built on the official Rust
 
 - `GroupedWriter` and `WriterOptions`: per-group chunk targets, optional
   age-based flushing, zstd or uncompressed chunks, metadata and attachments.
-- `messages`: standard Foxglove `CompressedVideo` protobuf and ROS 2
-  `sensor_msgs/msg/JointState` CDR encoding.
+- `messages`: ROS 2 `sensor_msgs/msg/JointState` CDR encoding, `CompressedVideo`
+  encoding as Foxglove protobuf or ROS 2 CDR, and `CompressedVideoCodec` for
+  reading and rewriting a channel's video messages through its schema.
 
 The crate is available through a pinned Git dependency and is not yet published
 to crates.io. See the [repository documentation](https://github.com/Hebbian-Robotics/mcap-tools#readme)

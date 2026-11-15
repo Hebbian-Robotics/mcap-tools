@@ -175,7 +175,7 @@ dependencies = [
 
 [[package]]
 name = "hebbian-mcap"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mcap",
  "prost",
@@ -185,7 +185,7 @@ dependencies = [
 
 [[package]]
 name = "hebbian-mcap-python"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "hebbian-mcap",
  "pyo3",

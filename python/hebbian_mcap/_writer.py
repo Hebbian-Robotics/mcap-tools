@@ -10,7 +10,7 @@ from typing import IO, NewType, Self
 from ._native import NativeWriter
 
 DEFAULT_CHUNK_SIZE_BYTES = 1024 * 1024
-DEFAULT_LIBRARY_IDENTIFIER = "hebbian-mcap/0.1.0"
+DEFAULT_LIBRARY_IDENTIFIER = "hebbian-mcap/0.1.1"
 SchemaId = NewType("SchemaId", int)
 ChannelId = NewType("ChannelId", int)
 NO_SCHEMA_ID = SchemaId(0)

@@ -1,5 +1,8 @@
 //! Thin Python transport adapter; all MCAP serialization lives in the Rust core.
-use hebbian_mcap::{GroupedWriter, WriterOptions, mcap};
+use hebbian_mcap::{
+    GroupedWriter, WriterOptions, mcap,
+    messages::{self, MessageEncoding, MessageError},
+};
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     prelude::*,
@@ -9,6 +12,7 @@ use std::{
     borrow::Cow,
     collections::BTreeMap,
     io::{self, Write},
+    str::FromStr,
     sync::Mutex,
 };
 
@@ -175,23 +179,94 @@ impl NativeWriter {
     }
 }
 
+#[allow(clippy::needless_pass_by_value)]
+fn message_error(error: MessageError) -> PyErr {
+    PyValueError::new_err(error.to_string())
+}
+
+/// One decoded `CompressedVideo` message.
+#[pyclass(frozen, get_all, module = "hebbian_mcap")]
+struct CompressedVideo {
+    /// `None` when the message carries no timestamp.
+    timestamp_nanoseconds: Option<i64>,
+    frame_id: String,
+    data: Py<PyBytes>,
+    format: String,
+}
+
 #[pyfunction]
+#[pyo3(signature = (timestamp_nanoseconds, frame_id, data, format, message_encoding = "protobuf"))]
 fn encode_compressed_video<'python>(
     python: Python<'python>,
     timestamp_nanoseconds: u64,
     frame_id: &str,
     data: &[u8],
     format: &str,
-) -> Bound<'python, PyBytes> {
-    PyBytes::new(
-        python,
-        &hebbian_mcap::messages::encode_compressed_video(
+    message_encoding: &str,
+) -> PyResult<Bound<'python, PyBytes>> {
+    let encoding = MessageEncoding::from_str(message_encoding).map_err(message_error)?;
+    let encoded = messages::CompressedVideo::stamped(timestamp_nanoseconds, frame_id, data, format)
+        .encode_as(encoding)
+        .map_err(message_error)?;
+    Ok(PyBytes::new(python, &encoded))
+}
+
+/// Reads and rewrites the `CompressedVideo` messages of one MCAP channel.
+#[pyclass(frozen, module = "hebbian_mcap")]
+struct CompressedVideoCodec(messages::CompressedVideoCodec);
+
+#[pymethods]
+impl CompressedVideoCodec {
+    #[new]
+    fn new(
+        message_encoding: &str,
+        schema_encoding: &str,
+        schema_name: &str,
+        schema_data: &[u8],
+    ) -> PyResult<Self> {
+        messages::CompressedVideoCodec::for_channel(
+            message_encoding,
+            schema_encoding,
+            schema_name,
+            schema_data,
+        )
+        .map(Self)
+        .map_err(message_error)
+    }
+
+    fn decode(&self, python: Python<'_>, message: &[u8]) -> PyResult<CompressedVideo> {
+        let video = self.0.decode(message).map_err(message_error)?;
+        let timestamp_nanoseconds = video
+            .timestamp
+            .map(|timestamp| {
+                timestamp
+                    .seconds
+                    .checked_mul(1_000_000_000)
+                    .and_then(|nanoseconds| nanoseconds.checked_add(timestamp.nanos.into()))
+                    .ok_or_else(|| {
+                        PyValueError::new_err(
+                            "CompressedVideo timestamp exceeds 64-bit nanoseconds",
+                        )
+                    })
+            })
+            .transpose()?;
+        Ok(CompressedVideo {
             timestamp_nanoseconds,
-            frame_id,
-            data,
-            format,
-        ),
-    )
+            frame_id: video.frame_id,
+            data: PyBytes::new(python, &video.data).unbind(),
+            format: video.format,
+        })
+    }
+
+    fn replace_data<'python>(
+        &self,
+        python: Python<'python>,
+        message: &[u8],
+        data: &[u8],
+    ) -> PyResult<Bound<'python, PyBytes>> {
+        let replaced = self.0.replace_data(message, data).map_err(message_error)?;
+        Ok(PyBytes::new(python, &replaced))
+    }
 }
 
 #[pyfunction]
@@ -218,6 +293,17 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<NativeWriter>()?;
     module.add_function(wrap_pyfunction!(encode_compressed_video, module)?)?;
     module.add_function(wrap_pyfunction!(encode_joint_state, module)?)?;
+    module.add_class::<CompressedVideo>()?;
+    module.add_class::<CompressedVideoCodec>()?;
+    module.add("COMPRESSED_VIDEO_SCHEMA_NAME", messages::VIDEO_SCHEMA_NAME)?;
+    module.add(
+        "ROS2_COMPRESSED_VIDEO_SCHEMA_NAME",
+        messages::ROS2_VIDEO_SCHEMA_NAME,
+    )?;
+    module.add(
+        "ROS2_COMPRESSED_VIDEO_SCHEMA",
+        PyBytes::new(module.py(), messages::ROS2_VIDEO_SCHEMA),
+    )?;
     module.add(
         "COMPRESSED_VIDEO_SCHEMA",
         PyBytes::new(module.py(), hebbian_mcap::messages::VIDEO_SCHEMA),

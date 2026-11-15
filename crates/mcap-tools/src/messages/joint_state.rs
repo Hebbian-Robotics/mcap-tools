@@ -18,46 +18,7 @@ int32 sec
 uint32 nanosec
 ";
 
-struct CdrBuffer(Vec<u8>);
-
-impl CdrBuffer {
-    /// Little-endian CDR: a 4-byte encapsulation header, then fields aligned to their
-    /// size counted from the byte after it.
-    fn new() -> Self {
-        Self(vec![0, 1, 0, 0])
-    }
-
-    fn align(&mut self, size: usize) {
-        while !(self.0.len() - 4).is_multiple_of(size) {
-            self.0.push(0);
-        }
-    }
-
-    fn write_u32(&mut self, value: u32) {
-        self.align(4);
-        self.0.extend_from_slice(&value.to_le_bytes());
-    }
-
-    fn write_length(&mut self, length: usize) {
-        self.write_u32(u32::try_from(length).expect("length checked before encoding"));
-    }
-
-    fn write_string(&mut self, value: &str) {
-        self.write_length(value.len() + 1);
-        self.0.extend_from_slice(value.as_bytes());
-        self.0.push(0);
-    }
-
-    fn write_doubles(&mut self, values: &[f64]) {
-        self.write_length(values.len());
-        if !values.is_empty() {
-            self.align(8);
-        }
-        for value in values {
-            self.0.extend_from_slice(&value.to_le_bytes());
-        }
-    }
-}
+use super::cdr::CdrWriter;
 
 /// One `JointState` stamped `timestamp_nanoseconds` after the Unix epoch, with
 /// positions in radians and no velocity or effort.
@@ -87,8 +48,8 @@ pub fn encode(
             "CDR strings cannot contain embedded NUL characters",
         ));
     }
-    let mut cdr = CdrBuffer::new();
-    cdr.0.extend_from_slice(&seconds.to_le_bytes());
+    let mut cdr = CdrWriter::new();
+    cdr.write_i32(seconds);
     cdr.write_u32(u32::try_from(timestamp_nanoseconds % 1_000_000_000).unwrap_or(0));
     cdr.write_string(frame_id);
     cdr.write_length(names.len());
@@ -98,7 +59,7 @@ pub fn encode(
     cdr.write_doubles(positions);
     cdr.write_doubles(&[]);
     cdr.write_doubles(&[]);
-    Ok(cdr.0)
+    Ok(cdr.into_bytes())
 }
 
 #[cfg(test)]

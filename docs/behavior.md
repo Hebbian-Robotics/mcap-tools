@@ -19,8 +19,25 @@ The upstream writer owns format serialization; use the
   dropping a writer abandons buffered messages.
 
 `GroupedWriter` and `WriterOptions` are the Rust entry points;
-`GroupedMcapWriter` is the Python adapter. Standard message helpers encode
-Foxglove `CompressedVideo` protobuf and ROS 2 `JointState` CDR.
+`GroupedMcapWriter` is the Python adapter.
+
+## Standard messages
+
+Message helpers encode ROS 2 `JointState` CDR and `CompressedVideo` as Foxglove
+protobuf or ROS 2 `foxglove_msgs/msg/CompressedVideo` CDR.
+
+`CompressedVideoCodec` reads and rewrites the video messages of one channel. Create
+it from the channel's `message_encoding` and its schema's encoding, name and data.
+
+- CDR channels need a `ros2msg` schema with a `uint8[] data` field and a
+  `string format` field. `timestamp` and `frame_id` are read when the schema
+  declares them. `wstring` fields and `ros2idl` schemas are not supported.
+- CDR messages are read through the channel's schema, so fields a recorder
+  added are located correctly. Little-endian and big-endian plain CDR are accepted.
+- Protobuf messages are read by Foxglove field numbers.
+- Replacing a payload keeps the stored bytes of every other field, including
+  fields outside the standard schema, and keeps a CDR message's byte order.
+- A protobuf message without a timestamp decodes to no timestamp.
 
 ## Video export
 

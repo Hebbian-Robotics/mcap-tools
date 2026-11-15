@@ -4,7 +4,7 @@
 [![PyPI](https://img.shields.io/pypi/v/hebbian-mcap)](https://pypi.org/project/hebbian-mcap/)
 
 Write standard MCAP recordings with separate chunk groups for video and telemetry,
-encode ROS 2/Foxglove messages, and export camera topics from MCAP to MP4.
+encode and decode ROS 2/Foxglove messages, and export camera topics from MCAP to MP4.
 Python and Rust share the official Rust MCAP writer through a small grouping
 layer. Maintained by Hebbian Robotics; this is an independent Foxglove-compatible
 project, not an official Foxglove product.
@@ -12,7 +12,7 @@ project, not an official Foxglove product.
 ## Install
 
 ```sh
-uv add 'hebbian-mcap==0.1.0'
+uv add 'hebbian-mcap==0.1.1'
 ```
 
 Prebuilt CPython 3.11+ wheels support Linux (glibc 2.17+, x86_64/aarch64),
@@ -40,12 +40,29 @@ See the [writer behavior reference](https://github.com/Hebbian-Robotics/mcap-too
 flush rules and lifecycle. For reading, use the official
 [Python MCAP reader](https://mcap.dev/docs/python/mcap-apidoc/mcap.reader).
 
+## Read and rewrite video messages
+
+Read a channel's `CompressedVideo` messages, or replace a payload and keep
+every other field:
+
+```python
+from hebbian_mcap import CompressedVideoCodec
+
+codec = CompressedVideoCodec(channel.message_encoding, schema.encoding, schema.name, schema.data)
+video = codec.decode(message.data)
+repaired = codec.replace_data(message.data, new_payload)
+```
+
+Foxglove protobuf and ROS 2 CDR channels are supported. CDR messages are read
+through the channel's schema, so fields a recorder added are preserved. See
+[standard messages](https://github.com/Hebbian-Robotics/mcap-tools/blob/main/docs/behavior.md#standard-messages).
+
 ## Export MCAP camera video to MP4
 
 Install the video extra, then select a camera topic:
 
 ```sh
-uv add 'hebbian-mcap[video]==0.1.0'
+uv add 'hebbian-mcap[video]==0.1.1'
 mcap-export recording.mcap front.mp4 --topic /cameras/front/video
 ```
 
