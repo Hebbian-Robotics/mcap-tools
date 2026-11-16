@@ -191,19 +191,19 @@ def test_fields_added_by_a_recorder_survive_a_payload_replacement(replacement: b
 
 
 @pytest.mark.parametrize(
-    ("codec", "message"),
+    ("codec", "message", "error_pattern"),
     [
-        (_ros2_codec(), b"\x00\x01\x00\x00\x03"),
-        (_ros2_codec(), b"\x00\x07\x00\x00" + bytes(32)),
-        (_protobuf_codec(), b"\xff\xff\xff"),
+        (_ros2_codec(), b"\x00\x01\x00\x00\x03", "field extends past the end"),
+        (_ros2_codec(), b"\x00\x07\x00\x00" + bytes(32), "unsupported encapsulation"),
+        (_protobuf_codec(), b"\xff\xff\xff", "malformed protobuf"),
     ],
 )
 def test_undecodable_video_messages_are_rejected(
-    codec: CompressedVideoCodec, message: bytes
+    codec: CompressedVideoCodec, message: bytes, error_pattern: str
 ) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=error_pattern):
         codec.decode(message)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=error_pattern):
         codec.replace_data(message, b"new")
 
 
@@ -219,7 +219,7 @@ def test_undecodable_video_messages_are_rejected(
 def test_channels_that_cannot_carry_compressed_video_are_rejected(
     message_encoding: str, schema_encoding: str, schema_name: str, schema_data: bytes
 ) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=r"unsupported (message encoding|schema)"):
         CompressedVideoCodec(message_encoding, schema_encoding, schema_name, schema_data)
 
 
@@ -263,20 +263,22 @@ def test_joint_state_carries_velocities_and_efforts() -> None:
 def test_joint_state_rejects_a_velocity_or_effort_count_that_differs_from_the_joints(
     field: str,
 ) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(
+        ValueError, match="velocities and efforts must be empty or have one value per joint"
+    ):
         encode_joint_state(0, "base", ["shoulder", "elbow"], [0.0, 0.0], **{field: [1.0]})
 
 
 @pytest.mark.parametrize(
-    ("timestamp", "frame_id", "names", "positions"),
+    ("timestamp", "frame_id", "names", "positions", "error_pattern"),
     [
-        (2**31 * 1_000_000_000, "base", ["joint"], [1.0]),
-        (0, "base", ["joint"], []),
-        (0, "base\0suffix", ["joint"], [1.0]),
+        (2**31 * 1_000_000_000, "base", ["joint"], [1.0], "timestamp exceeds"),
+        (0, "base", ["joint"], [], "names and positions must have equal lengths"),
+        (0, "base\0suffix", ["joint"], [1.0], "embedded NUL"),
     ],
 )
 def test_joint_state_rejects_inputs_that_would_corrupt_the_message(
-    timestamp: int, frame_id: str, names: list[str], positions: list[float]
+    timestamp: int, frame_id: str, names: list[str], positions: list[float], error_pattern: str
 ) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=error_pattern):
         encode_joint_state(timestamp, frame_id, names, positions)

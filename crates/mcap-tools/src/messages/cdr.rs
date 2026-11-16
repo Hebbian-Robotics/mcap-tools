@@ -56,6 +56,10 @@ impl CdrWriter {
     }
 
     /// Callers check that lengths fit `u32` before encoding.
+    #[allow(
+        clippy::expect_used,
+        reason = "All encoders validate CDR field lengths before writing"
+    )]
     pub(crate) fn write_length(&mut self, length: usize) {
         self.write_u32(u32::try_from(length).expect("length checked before encoding"));
     }
@@ -138,10 +142,7 @@ impl<'message> CdrReader<'message> {
     }
 
     pub(crate) fn read_u32(&mut self) -> Result<u32, MessageError> {
-        let bytes = self
-            .take_aligned(4, 4)?
-            .try_into()
-            .expect("take returned four bytes");
+        let bytes = self.take_aligned(4, 4)?.try_into().map_err(|_| TRUNCATED)?;
         Ok(if self.big_endian {
             u32::from_be_bytes(bytes)
         } else {

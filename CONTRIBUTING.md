@@ -7,6 +7,8 @@ local extension with `uv run maturin develop`.
 ## Validate changes
 
 ```sh
+cargo install cargo-machete --version 0.9.2 --locked
+cargo machete --with-metadata --skip-target-dir
 cargo fmt
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test
@@ -36,7 +38,7 @@ platform coverage.
 
 Review Rust candidates with `cargo upgrade --dry-run --incompatible --pinned`.
 Use `cargo update` and `uv lock --upgrade` to refresh resolutions, then validate
-and review lockfile changes. Python resolution retains a five-day release-age
+and review lockfile changes. Python resolution retains a three-day release-age
 guard. Lower bounds for video extras preserve Python 3.11 compatibility; newer
 compatible releases are selected for other Python versions.
 

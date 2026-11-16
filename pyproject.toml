@@ -44,14 +44,14 @@ features = ["pyo3/extension-module"]
 
 [tool.uv]
 cache-keys = [{ file = "pyproject.toml" }, { file = "Cargo.toml" }, { file = "Cargo.lock" }, { file = "crates/**/*.rs" }, { file = "crates/**/Cargo.toml" }, { file = "python/**/*.py" }, { file = "python/**/*.pyi" }, { file = "crates/**/schemas/*" }]
-exclude-newer = "5 days"
+exclude-newer = "3 days"
 
 [tool.ruff]
 line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "W", "F", "I", "B", "C4", "UP", "ANN", "PTH", "RET", "SIM", "TID", "RUF"]
+select = ["E", "W", "F", "I", "B", "C4", "UP", "ANN", "PTH", "RET", "SIM", "TID", "RUF", "PLE", "LOG", "PGH003", "PGH004", "PT010", "PT011", "PT012", "PT014", "ASYNC210", "ASYNC220", "ASYNC221", "ASYNC222", "ASYNC230", "ASYNC250", "ASYNC251"]
 ignore = ["E501", "ANN401"]
 
 [tool.pytest.ini_options]
@@ -65,4 +65,6 @@ indent-style = "space"
 division-by-zero = "error"
 deprecated = "error"
 unused-ignore-comment = "error"
+invalid-ignore-comment = "error"
+ignore-comment-unknown-rule = "error"
 possibly-unresolved-reference = "error"

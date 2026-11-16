@@ -89,7 +89,9 @@ impl<W: Write + Seek> GroupedWriter<W> {
         if self.state != WriterState::Active {
             return Err(McapError::AttemptedWriteAfterFailure);
         }
-        Ok(self.writer.as_mut().expect("writer exists until drop"))
+        self.writer
+            .as_mut()
+            .ok_or(McapError::AttemptedWriteAfterFailure)
     }
 
     pub fn add_schema(&mut self, name: &str, encoding: &str, data: &[u8]) -> McapResult<u16> {

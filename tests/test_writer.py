@@ -500,7 +500,7 @@ class TestPerGroupChunkTargets:
 
 def test_aborted_writer_does_not_publish_partial_file(tmp_path: Path) -> None:
     path = tmp_path / "aborted.mcap"
-    with pytest.raises(RuntimeError, match="boom"):  # noqa: SIM117
+    with pytest.raises(RuntimeError, match="boom"):  # noqa: PT012, SIM117 -- Exercise abort during the writer context lifetime.
         with GroupedMcapWriter(path) as writer:
             schema_id = writer.register_schema("s", "jsonschema", b"{}")
             writer.register_channel("/t", "json", schema_id, group="state")
@@ -511,7 +511,7 @@ def test_aborted_writer_does_not_publish_partial_file(tmp_path: Path) -> None:
 def test_writer_abort_preserves_previously_published_file(tmp_path: Path) -> None:
     path = tmp_path / "published.mcap"
     path.write_bytes(b"previous valid bytes")
-    with pytest.raises(RuntimeError, match="boom"):  # noqa: SIM117
+    with pytest.raises(RuntimeError, match="boom"):  # noqa: PT012, SIM117 -- Exercise abort during the writer context lifetime.
         with GroupedMcapWriter(path) as writer:
             writer.register_channel("/t", "json", NO_SCHEMA_ID, group="state")
             raise RuntimeError("boom")

@@ -42,6 +42,10 @@ pub struct CompressedVideo {
 impl CompressedVideo {
     /// A message stamped `timestamp_nanoseconds` after the Unix epoch.
     #[must_use]
+    #[allow(
+        clippy::expect_used,
+        reason = "Dividing u64 nanoseconds bounds seconds below i64::MAX and the remainder below one billion"
+    )]
     pub fn stamped(timestamp_nanoseconds: u64, frame_id: &str, data: &[u8], format: &str) -> Self {
         Self {
             timestamp: Some(prost_types::Timestamp {
@@ -238,7 +242,7 @@ impl CompressedVideoCodec {
                     MessageError::OutOfRange("CompressedVideo field exceeds CDR length range")
                 })?;
                 let (_, rewritten) = walk_cdr_video(definitions, roles, message, Some(data))?;
-                Ok(rewritten.expect("a replacement payload produces output"))
+                rewritten.ok_or(MessageError::Cdr("replacement payload was not encoded"))
             }
         }
     }
@@ -328,6 +332,12 @@ fn replace_protobuf_data(message: &[u8], data: &[u8]) -> Result<Vec<u8>, Message
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test assertions fail immediately on unexpected outcomes"
+)]
 mod tests {
     use super::{
         CompressedVideo, CompressedVideoCodec, MessageEncoding, ROS2_VIDEO_SCHEMA,

@@ -25,10 +25,11 @@
   },
   "scripts": {
     "format": "biome check --write .",
-    "lint": "biome check .",
+    "lint": "biome check --error-on-warnings .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "check": "pnpm lint && pnpm typecheck && pnpm test"
+    "check": "pnpm lint && pnpm typecheck && pnpm knip && pnpm test",
+    "knip": "knip"
   },
   "dependencies": {
     "@mcap/core": "^2.4.0",
@@ -39,7 +40,8 @@
     "@types/node": "^26.6.6",
     "typescript": "7.0.2",
     "vitest": "^5.1.0",
-    "fzstd": "^0.1.1"
+    "fzstd": "^0.1.1",
+    "knip": "^6.45.0"
   },
   "packageManager": "pnpm@12.16.1"
 }
