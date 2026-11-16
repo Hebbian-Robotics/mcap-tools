@@ -39,7 +39,13 @@
       },
       "style": {
         "noUselessElse": "error",
-        "noDoneCallback": "error"
+        "noDoneCallback": "error",
+        "noParameterAssign": {
+          "level": "error",
+          "options": {
+            "propertyAssignment": "allow"
+          }
+        }
       }
     }
   }
