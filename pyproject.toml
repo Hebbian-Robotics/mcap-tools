@@ -51,11 +51,14 @@ line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "W", "F", "I", "B", "C4", "UP", "ANN", "PTH", "RET", "SIM", "TID", "RUF", "PLE", "LOG", "PGH003", "PGH004", "PT010", "PT011", "PT012", "PT014", "ASYNC210", "ASYNC220", "ASYNC221", "ASYNC222", "ASYNC230", "ASYNC250", "ASYNC251"]
+select = ["E", "W", "F", "I", "B", "C4", "C901", "UP", "ANN", "PTH", "RET", "SIM", "TID", "RUF", "PLE", "LOG", "PGH003", "PGH004", "PT010", "PT011", "PT012", "PT014", "PT018", "ASYNC210", "ASYNC220", "ASYNC221", "ASYNC222", "ASYNC230", "ASYNC250", "ASYNC251"]
 ignore = ["E501", "ANN401"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
 
 [tool.ruff.format]
 quote-style = "double"

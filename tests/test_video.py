@@ -91,7 +91,8 @@ def test_mcap_h264_preserves_frames_gaps_timestamps_and_original_bytes(
     with av.open(result.video_path) as video:
         frames = list(video.decode(video=0))
         for frame, timestamp in zip(frames, FRAME_TIMES_NS, strict=True):
-            assert frame.pts is not None and frame.time_base is not None
+            assert frame.pts is not None
+            assert frame.time_base is not None
             assert frame.pts * frame.time_base == Fraction((timestamp + 500) // 1000, 1_000_000)
     decoder = av.CodecContext.create("h264", "r")
     expected_frames = [frame for packet in packets for frame in decoder.decode(av.Packet(packet))]
@@ -192,7 +193,8 @@ def test_image_mcap_preserves_pixels_and_ignores_unselected_cameras(
         frames = list(video.decode(video=0))
     assert len(frames) == len(FRAME_TIMES_NS)
     for frame, timestamp in zip(frames, FRAME_TIMES_NS, strict=True):
-        assert frame.pts is not None and frame.time_base is not None
+        assert frame.pts is not None
+        assert frame.time_base is not None
         assert frame.pts * frame.time_base == Fraction((timestamp + 500) // 1000, 1_000_000)
         np.testing.assert_array_equal(frame.to_ndarray(format="rgb24"), pixels)
 
@@ -269,7 +271,8 @@ def test_ros2_cdr_video_preserves_capture_timing(tmp_path: Path) -> None:
     with av.open(result.video_path) as output:
         frames = list(output.decode(video=0))
         for frame, timestamp in zip(frames, FRAME_TIMES_NS, strict=True):
-            assert frame.pts is not None and frame.time_base is not None
+            assert frame.pts is not None
+            assert frame.time_base is not None
             assert frame.pts * frame.time_base == Fraction((timestamp + 500) // 1000, 1_000_000)
 
 

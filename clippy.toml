@@ -1,0 +1,2 @@
+# Clippy also counts modules, impls and async task blocks toward nesting.
+excessive-nesting-threshold = 7

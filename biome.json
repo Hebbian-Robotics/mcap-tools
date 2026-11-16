@@ -16,7 +16,8 @@
     "rules": {
       "preset": "recommended",
       "suspicious": {
-        "noExplicitAny": "error"
+        "noExplicitAny": "error",
+        "noDuplicateTestHooks": "error"
       },
       "nursery": {
         "noFloatingPromises": "error",
@@ -25,7 +26,16 @@
           "options": {
             "requireExplicitCase": true
           }
+        },
+        "noExcessiveNestedBlocks": {
+          "level": "error",
+          "options": {
+            "max": 4
+          }
         }
+      },
+      "complexity": {
+        "noExcessiveNestedTestSuites": "error"
       }
     }
   }
