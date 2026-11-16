@@ -36,6 +36,10 @@
       },
       "complexity": {
         "noExcessiveNestedTestSuites": "error"
+      },
+      "style": {
+        "noUselessElse": "error",
+        "noDoneCallback": "error"
       }
     }
   }
