@@ -26,26 +26,37 @@ export function compressedVideoData(message: Uint8Array): Uint8Array {
   let position = 0;
   function varint(): number {
     let value = 0;
-    for (let shift = 0; ; shift += 7) {
+    for (let shift = 0; shift < 70; shift += 7) {
       const byte = message[position++];
       if (byte === undefined) throw new Error("Truncated video message");
+      if (shift === 63 && byte > 1)
+        throw new Error("Invalid video message varint");
       value += (byte & 0x7f) * 2 ** shift;
       if ((byte & 0x80) === 0) return value;
     }
+    throw new Error("Invalid video message varint");
+  }
+  function skip(length: number): void {
+    if (!Number.isSafeInteger(length) || length > message.length - position)
+      throw new Error("Truncated video message");
+    position += length;
   }
   while (position < message.length) {
     const key = varint();
+    if (!Number.isSafeInteger(key) || key < 8 || key > 0xffffffff)
+      throw new Error("Invalid video message field");
     const wireType = key & 7;
     if (wireType === 2) {
       const length = varint();
-      if (key >> 3 === 3) return message.subarray(position, position + length);
-      position += length;
+      const start = position;
+      skip(length);
+      if (Math.floor(key / 8) === 3) return message.subarray(start, position);
     } else if (wireType === 0) {
       varint();
     } else if (wireType === 1) {
-      position += 8;
+      skip(8);
     } else if (wireType === 5) {
-      position += 4;
+      skip(4);
     } else {
       throw new Error("Unsupported video message encoding");
     }

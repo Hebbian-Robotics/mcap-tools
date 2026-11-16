@@ -66,3 +66,31 @@ test("remuxing preserves captured frame intervals and picture size", async () =>
 test("an empty clip is refused instead of producing an unusable movie", async () => {
   await expect(remuxToMp4([], 16, 8)).rejects.toThrow("No video packets");
 });
+
+test.each([
+  [0x1a, 3, 1],
+  [0x22, 3, 1],
+  [0x21, 1, 2],
+  [0x25, 1, 2],
+  [0x1a, ...Array<number>(10).fill(0xff)],
+  [0, 0x1a, 0],
+])("malformed video protobuf is rejected: %j", (...encoded) => {
+  expect(() => compressedVideoData(new Uint8Array(encoded))).toThrow();
+});
+
+test("video payload survives unknown uint64 and length-delimited fields", () => {
+  const encoded = new Uint8Array([
+    0x20,
+    ...Array<number>(9).fill(0xff),
+    1,
+    0x2a,
+    2,
+    8,
+    9,
+    0x1a,
+    2,
+    4,
+    5,
+  ]);
+  expect(compressedVideoData(encoded)).toEqual(new Uint8Array([4, 5]));
+});
