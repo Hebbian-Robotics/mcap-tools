@@ -1,0 +1,4 @@
+[bans]
+multiple-versions = "allow"
+wildcards = "allow"
+deny = ["pyo3", "livekit", "libwebrtc", "serialport", "rustypot", "ort", "axum"]

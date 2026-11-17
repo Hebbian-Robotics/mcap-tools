@@ -48,5 +48,27 @@
         }
       }
     }
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["typescript/src/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["**", "!@mcap/core", "!mediabunny", "!./**"],
+                    "message": "Browser MCAP utilities depend on generic media libraries and local utilities, not consumer applications or UI frameworks."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
 }

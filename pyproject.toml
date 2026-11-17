@@ -29,7 +29,18 @@ Issues = "https://github.com/Hebbian-Robotics/mcap-tools/issues"
 Repository = "https://github.com/Hebbian-Robotics/mcap-tools"
 
 [dependency-groups]
-dev = ["av>=18.1.0", "numpy>=2.3.5", "maturin>=1.9,<2", "mcap>=1.4", "mcap-protobuf-support>=0.5.4", "mcap-ros2-support>=0.5.7", "pytest>=9", "ruff>=0.16", "ty>=0.0.74"]
+dev = [
+    "av>=18.1.0",
+    "numpy>=2.3.5",
+    "maturin>=1.9,<2",
+    "mcap>=1.4",
+    "mcap-protobuf-support>=0.5.4",
+    "mcap-ros2-support>=0.5.7",
+    "pytest>=9",
+    "ruff>=0.16",
+    "ty>=0.0.74",
+    "import-linter>=2.15",
+]
 
 [build-system]
 requires = ["maturin>=1.9,<2"]
@@ -71,3 +82,23 @@ unused-ignore-comment = "error"
 invalid-ignore-comment = "error"
 ignore-comment-unknown-rule = "error"
 possibly-unresolved-reference = "error"
+
+[tool.importlinter]
+root_package = "hebbian_mcap"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "basic writing does not require optional video dependencies"
+type = "forbidden"
+as_packages = false
+source_modules = ["hebbian_mcap", "hebbian_mcap._writer"]
+forbidden_modules = ["hebbian_mcap.video", "av", "numpy", "mcap", "mcap_protobuf", "mcap_ros2"]
+
+[[tool.importlinter.contracts]]
+name = "H264 parsing is independent of file and video adapters"
+type = "forbidden"
+source_modules = ["hebbian_mcap.h264"]
+forbidden_modules = [
+    "hebbian_mcap.video", "hebbian_mcap._writer", "hebbian_mcap.cli",
+    "av", "numpy", "mcap", "mcap_protobuf", "mcap_ros2", "subprocess", "socket",
+]

@@ -8,13 +8,16 @@ local extension with `uv run maturin develop`.
 
 ```sh
 cargo install cargo-machete --version 0.9.2 --locked
+cargo install cargo-deny --version 0.20.2 --locked
 cargo machete --with-metadata --skip-target-dir
+cargo deny --manifest-path crates/mcap-tools/Cargo.toml --config crates/mcap-tools/deny.toml --all-features --exclude-dev --locked check bans
 cargo fmt
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test
 uv run ruff check --fix
 uv run ruff format
 uv run ty check
+uv run lint-imports
 uv run pytest
 ```
 
