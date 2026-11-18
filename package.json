@@ -26,7 +26,7 @@
   "scripts": {
     "format": "biome check --write .",
     "lint": "biome check --error-on-warnings .",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsrs --noEmit",
     "test": "vitest run",
     "check": "pnpm lint && pnpm typecheck && pnpm knip && pnpm test",
     "knip": "knip"
@@ -38,10 +38,10 @@
   "devDependencies": {
     "@biomejs/biome": "2.6.6",
     "@types/node": "^26.6.6",
-    "typescript": "7.0.2",
-    "vitest": "^5.1.0",
     "fzstd": "^0.1.1",
-    "knip": "^6.45.0"
+    "knip": "^6.45.0",
+    "tsrs": "0.25.0-ts7.1.0-beta",
+    "vitest": "^5.1.0"
   },
   "packageManager": "pnpm@12.16.1"
 }
