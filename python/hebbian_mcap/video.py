@@ -11,7 +11,7 @@ import json
 import math
 import os
 import tempfile
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from enum import Enum, auto
 from fractions import Fraction
@@ -30,7 +30,13 @@ from mcap.records import Channel, Schema
 from mcap_protobuf.decoder import DecoderFactory as ProtobufDecoderFactory
 from mcap_ros2.decoder import DecoderFactory as Ros2DecoderFactory
 
-from ._native import COMPRESSED_VIDEO_SCHEMA_NAME, ROS2_COMPRESSED_VIDEO_SCHEMA_NAME
+from ._native import (
+    COMPRESSED_VIDEO_SCHEMA,
+    COMPRESSED_VIDEO_SCHEMA_NAME,
+    ROS2_COMPRESSED_VIDEO_SCHEMA,
+    ROS2_COMPRESSED_VIDEO_SCHEMA_NAME,
+    CompressedVideoCodec,
+)
 from .h264 import (
     annex_b_nal_offsets_and_types,
     ensure_access_unit_delimiter,
@@ -40,6 +46,10 @@ from .h264 import (
 
 PASSTHROUGH_VIDEO_SCHEMA_NAMES = frozenset(
     {COMPRESSED_VIDEO_SCHEMA_NAME, ROS2_COMPRESSED_VIDEO_SCHEMA_NAME}
+)
+_NATIVE_VIDEO_SCHEMAS = (
+    ("protobuf", "protobuf", COMPRESSED_VIDEO_SCHEMA_NAME, COMPRESSED_VIDEO_SCHEMA),
+    ("cdr", "ros2msg", ROS2_COMPRESSED_VIDEO_SCHEMA_NAME, ROS2_COMPRESSED_VIDEO_SCHEMA),
 )
 
 MAXIMUM_FRAME_BYTES = 32 * 1024 * 1024
@@ -177,21 +187,27 @@ def _select_camera(reader: McapReader, camera_topic: str | None) -> CameraChanne
     return CameraChannel(channel, schema)
 
 
+def _camera_decoder(selected: CameraChannel) -> Callable[[bytes], object]:
+    message_encoding = selected.channel.message_encoding
+    schema = selected.schema
+    schema_identity = (message_encoding, schema.encoding, schema.name, schema.data)
+    if schema_identity in _NATIVE_VIDEO_SCHEMAS:
+        return CompressedVideoCodec(*schema_identity).decode
+    if message_encoding == "json":
+        return json.loads
+    for factory in (Ros2DecoderFactory(), ProtobufDecoderFactory()):
+        decoder = factory.decoder_for(message_encoding, schema)
+        if decoder is not None:
+            return decoder
+    raise McapMediaError("unsupported camera message encoding")
+
+
 def _camera_messages(
     reader: McapReader,
     selected: CameraChannel,
     limits: CameraExportLimits,
 ) -> Iterator[tuple[int, object]]:
-    if selected.channel.message_encoding == "json":
-        decoder = json.loads
-    else:
-        decoder = None
-        for factory in (Ros2DecoderFactory(), ProtobufDecoderFactory()):
-            decoder = factory.decoder_for(selected.channel.message_encoding, selected.schema)
-            if decoder is not None:
-                break
-        if decoder is None:
-            raise McapMediaError("unsupported camera message encoding")
+    decoder = _camera_decoder(selected)
     maximum_frames = math.ceil(limits.maximum_duration_seconds * limits.maximum_frames_per_second)
     for frame_count, (_, _, message) in enumerate(
         reader.iter_messages(topics=[selected.topic], log_time_order=True), 1

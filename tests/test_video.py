@@ -10,6 +10,7 @@ from pathlib import Path
 import av
 import numpy as np
 import pytest
+from hebbian_mcap import ROS2_COMPRESSED_VIDEO_SCHEMA, ROS2_COMPRESSED_VIDEO_SCHEMA_NAME
 from hebbian_mcap.video import CameraExportLimits, McapMediaError, export_mcap_camera
 from mcap.writer import Writer
 from mcap_test_helpers import write_compressed_video_mcap
@@ -243,7 +244,8 @@ def test_invalid_mcap_is_reported_as_a_camera_export_error(tmp_path: Path) -> No
     assert not destination.exists()
 
 
-def test_ros2_cdr_video_preserves_capture_timing(tmp_path: Path) -> None:
+@pytest.mark.parametrize("data_field_type", ["uint8", "byte"])
+def test_ros2_cdr_video_preserves_log_timing(tmp_path: Path, data_field_type: str) -> None:
     from types import SimpleNamespace
 
     from mcap_ros2.writer import Writer as Ros2Writer
@@ -251,10 +253,8 @@ def test_ros2_cdr_video_preserves_capture_timing(tmp_path: Path) -> None:
     source = tmp_path / "cdr.mcap"
     writer = Ros2Writer(str(source))
     schema = writer.register_msgdef(
-        "foxglove_msgs/msg/CompressedVideo",
-        "builtin_interfaces/Time timestamp\nstring frame_id\nuint8[] data\nstring format\n"
-        + "=" * 80
-        + "\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n",
+        ROS2_COMPRESSED_VIDEO_SCHEMA_NAME,
+        ROS2_COMPRESSED_VIDEO_SCHEMA.decode().replace("uint8[] data", f"{data_field_type}[] data"),
     )
     for timestamp, packet in zip(FRAME_TIMES_NS, _h264_packets(), strict=True):
         log_time = CAMERA_START_NS + timestamp
@@ -262,9 +262,7 @@ def test_ros2_cdr_video_preserves_capture_timing(tmp_path: Path) -> None:
             "/ros/camera",
             schema,
             SimpleNamespace(
-                timestamp=SimpleNamespace(
-                    sec=log_time // 1_000_000_000, nanosec=log_time % 1_000_000_000
-                ),
+                timestamp=SimpleNamespace(sec=1, nanosec=0),
                 frame_id="camera",
                 data=packet,
                 format="h264",
@@ -334,9 +332,13 @@ def test_exports_a_rust_written_recording_with_separate_telemetry(tmp_path: Path
         )
         for timestamp, packet in zip(FRAME_TIMES_NS, _h264_packets(), strict=True):
             log_time = CAMERA_START_NS + timestamp
+            # The wire timestamp can exceed signed 64-bit nanoseconds.
+            message_timestamp = 2**63 + timestamp
             writer.write_message(telemetry_channel, log_time, b'{"position": 0.5}')
             writer.write_message(
-                video_channel, log_time, encode_compressed_video(log_time, "front", packet, "h264")
+                video_channel,
+                log_time,
+                encode_compressed_video(message_timestamp, "front", packet, "h264"),
             )
     result = export_mcap_camera(source, tmp_path / "native.mp4", limits=LIMITS)
     assert result.camera_topic == "/cameras/front/video"

@@ -195,7 +195,7 @@ fn message_error(error: MessageError) -> PyErr {
 #[pyclass(frozen, get_all, module = "hebbian_mcap")]
 struct CompressedVideo {
     /// `None` when the message carries no timestamp.
-    timestamp_nanoseconds: Option<i64>,
+    timestamp_nanoseconds: Option<i128>,
     frame_id: String,
     data: Py<PyBytes>,
     format: String,
@@ -243,16 +243,9 @@ impl CompressedVideoCodec {
 
     fn decode(&self, python: Python<'_>, message: &[u8]) -> PyResult<CompressedVideo> {
         let video = self.0.decode(message).map_err(message_error)?;
-        let timestamp_nanoseconds = video
-            .timestamp
-            .map(|timestamp| {
-                let nanoseconds =
-                    i128::from(timestamp.seconds) * 1_000_000_000 + i128::from(timestamp.nanos);
-                i64::try_from(nanoseconds).map_err(|_| {
-                    PyValueError::new_err("CompressedVideo timestamp exceeds 64-bit nanoseconds")
-                })
-            })
-            .transpose()?;
+        let timestamp_nanoseconds = video.timestamp.map(|timestamp| {
+            i128::from(timestamp.seconds) * 1_000_000_000 + i128::from(timestamp.nanos)
+        });
         Ok(CompressedVideo {
             timestamp_nanoseconds,
             frame_id: video.frame_id,

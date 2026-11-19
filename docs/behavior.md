@@ -46,6 +46,8 @@ it from the channel's `message_encoding` and its schema's encoding, name and dat
 
 The exporter reads Foxglove video/image and ROS 2 camera messages encoded as JSON,
 protobuf or CDR. Choose an exact topic when the file declares multiple cameras.
+For the two bundled `CompressedVideo` schemas, it uses `CompressedVideoCodec`.
+Other schemas use the decoders for their message encodings.
 
 | Input | Output behavior |
 | --- | --- |
