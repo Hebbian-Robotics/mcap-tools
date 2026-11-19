@@ -234,6 +234,15 @@ def test_camera_export_preserves_an_existing_destination(tmp_path: Path) -> None
     assert destination.read_bytes() == b"existing result"
 
 
+def test_invalid_mcap_is_reported_as_a_camera_export_error(tmp_path: Path) -> None:
+    source = tmp_path / "invalid.mcap"
+    source.write_bytes(b"invalid recording" * 10)
+    destination = tmp_path / "video.mp4"
+    with pytest.raises(McapMediaError, match="Invalid MCAP"):
+        export_mcap_camera(source, destination)
+    assert not destination.exists()
+
+
 def test_ros2_cdr_video_preserves_capture_timing(tmp_path: Path) -> None:
     from types import SimpleNamespace
 

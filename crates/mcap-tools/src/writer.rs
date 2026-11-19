@@ -2,6 +2,7 @@ use mcap::{McapError, McapResult, Writer, records::MessageHeader};
 use std::{
     collections::BTreeMap,
     io::{Seek, Write},
+    num::NonZeroUsize,
     time::{Duration, Instant},
 };
 
@@ -34,15 +35,29 @@ struct PendingMessage {
 }
 
 struct PendingGroup {
-    name: String,
-    messages: Vec<PendingMessage>,
-    bytes: usize,
-    oldest: Option<Instant>,
+    chunk_target: NonZeroUsize,
+    chunk: Option<PendingChunk>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum WriterState {
-    Active,
+struct PendingChunk {
+    messages: Vec<PendingMessage>,
+    bytes: usize,
+    opened_at: Instant,
+}
+
+impl PendingChunk {
+    fn is_due(&self, target: NonZeroUsize, maximum_age: Option<Duration>, now: Instant) -> bool {
+        self.bytes > target.get()
+            || maximum_age
+                .is_some_and(|maximum_age| now.duration_since(self.opened_at) >= maximum_age)
+    }
+}
+
+// Opcode, record length, channel ID, sequence, log time, and publish time.
+const MESSAGE_RECORD_OVERHEAD: usize = 1 + 8 + 2 + 4 + 8 + 8;
+
+enum WriterState<W: Write + Seek> {
+    Active(Box<Writer<W>>),
     Finished,
     Failed,
 }
@@ -53,11 +68,13 @@ enum WriterState {
 /// from different groups in a chunk. Dropping abandons buffered messages: explicitly
 /// call `finish` for a complete archive or `flush` for durable partial data.
 pub struct GroupedWriter<W: Write + Seek> {
-    writer: Option<Writer<W>>,
-    options: WriterOptions,
+    default_chunk_target: NonZeroUsize,
+    chunk_targets_by_group: BTreeMap<String, NonZeroUsize>,
+    max_chunk_age: Option<Duration>,
     groups: Vec<PendingGroup>,
+    group_by_name: BTreeMap<String, usize>,
     group_by_channel: BTreeMap<u16, usize>,
-    state: WriterState,
+    state: WriterState<W>,
 }
 
 fn invalid_input(message: impl Into<String>) -> McapError {
@@ -66,9 +83,15 @@ fn invalid_input(message: impl Into<String>) -> McapError {
 
 impl<W: Write + Seek> GroupedWriter<W> {
     pub fn new(output: W, options: WriterOptions) -> McapResult<Self> {
-        if options.chunk_size == 0 || options.chunk_size_by_group.values().any(|size| *size == 0) {
-            return Err(invalid_input("chunk sizes must be positive"));
-        }
+        let parse_chunk_target = |size| {
+            NonZeroUsize::new(size).ok_or_else(|| invalid_input("chunk sizes must be positive"))
+        };
+        let default_chunk_target = parse_chunk_target(options.chunk_size)?;
+        let chunk_targets_by_group = options
+            .chunk_size_by_group
+            .into_iter()
+            .map(|(group, size)| Ok((group, parse_chunk_target(size)?)))
+            .collect::<McapResult<_>>()?;
         let writer = mcap::WriteOptions::new()
             .compression(options.compression)
             .library(&options.library)
@@ -77,25 +100,54 @@ impl<W: Write + Seek> GroupedWriter<W> {
             .disable_seeking(true)
             .create(output)?;
         Ok(Self {
-            writer: Some(writer),
-            options,
+            default_chunk_target,
+            chunk_targets_by_group,
+            max_chunk_age: options.max_chunk_age,
             groups: Vec::new(),
+            group_by_name: BTreeMap::new(),
             group_by_channel: BTreeMap::new(),
-            state: WriterState::Active,
+            state: WriterState::Active(Box::new(writer)),
         })
     }
 
     fn active(&mut self) -> McapResult<&mut Writer<W>> {
-        if self.state != WriterState::Active {
-            return Err(McapError::AttemptedWriteAfterFailure);
+        match &mut self.state {
+            WriterState::Active(writer) => Ok(writer),
+            WriterState::Finished | WriterState::Failed => {
+                Err(McapError::AttemptedWriteAfterFailure)
+            }
         }
-        self.writer
-            .as_mut()
-            .ok_or(McapError::AttemptedWriteAfterFailure)
+    }
+
+    fn abandon_writer(&mut self) {
+        // Upstream's Drop auto-finishes. An aborted or failed archive must
+        // never get a valid footer from an implicit finish.
+        if let WriterState::Active(writer) = std::mem::replace(&mut self.state, WriterState::Failed)
+        {
+            let _ = writer.into_inner();
+        }
+        self.groups.clear();
+    }
+
+    fn write_to_archive<T>(
+        &mut self,
+        write: impl FnOnce(&mut Writer<W>) -> McapResult<T>,
+    ) -> McapResult<T> {
+        let result = write(self.active()?);
+        // These validation errors are returned before upstream writes bytes.
+        if let Err(error) = &result
+            && !matches!(
+                error,
+                McapError::UnknownSchema(..) | McapError::TooManySchemas
+            )
+        {
+            self.abandon_writer();
+        }
+        result
     }
 
     pub fn add_schema(&mut self, name: &str, encoding: &str, data: &[u8]) -> McapResult<u16> {
-        self.active()?.add_schema(name, encoding, data)
+        self.write_to_archive(|writer| writer.add_schema(name, encoding, data))
     }
 
     pub fn add_channel(
@@ -110,21 +162,24 @@ impl<W: Write + Seek> GroupedWriter<W> {
         // matches; identical channels may intentionally belong to different groups.
         let channel_id = u16::try_from(self.group_by_channel.len() + 1)
             .map_err(|_| McapError::TooManyChannels)?;
-        self.active()?
-            .add_channel_with_id(channel_id, schema_id, topic, encoding, metadata)?;
-        let group_index = self
-            .groups
-            .iter()
-            .position(|pending| pending.name == group)
-            .unwrap_or_else(|| {
-                self.groups.push(PendingGroup {
-                    name: group.into(),
-                    messages: Vec::new(),
-                    bytes: 0,
-                    oldest: None,
-                });
-                self.groups.len() - 1
+        self.write_to_archive(|writer| {
+            writer.add_channel_with_id(channel_id, schema_id, topic, encoding, metadata)
+        })?;
+        let group_index = if let Some(&index) = self.group_by_name.get(group) {
+            index
+        } else {
+            let index = self.groups.len();
+            self.groups.push(PendingGroup {
+                chunk_target: self
+                    .chunk_targets_by_group
+                    .get(group)
+                    .copied()
+                    .unwrap_or(self.default_chunk_target),
+                chunk: None,
             });
+            self.group_by_name.insert(group.to_owned(), index);
+            index
+        };
         self.group_by_channel.insert(channel_id, group_index);
         Ok(channel_id)
     }
@@ -139,28 +194,31 @@ impl<W: Write + Seek> GroupedWriter<W> {
                     header.sequence,
                     header.channel_id,
                 ))?;
-        let pending = &mut self.groups[group_index];
-        pending.oldest.get_or_insert_with(Instant::now);
-        pending.bytes += data.len() + 31;
+        let now = Instant::now();
+        let pending = self.groups[group_index]
+            .chunk
+            .get_or_insert_with(|| PendingChunk {
+                messages: Vec::new(),
+                bytes: 0,
+                opened_at: now,
+            });
+        pending.bytes += data.len() + MESSAGE_RECORD_OVERHEAD;
         pending.messages.push(PendingMessage {
             header,
             data: data.to_vec(),
         });
-        for index in 0..self.groups.len() {
-            let pending = &self.groups[index];
-            let target = self
-                .options
-                .chunk_size_by_group
-                .get(&pending.name)
-                .copied()
-                .unwrap_or(self.options.chunk_size);
-            let due = pending.bytes > target
-                || self.options.max_chunk_age.is_some_and(|maximum| {
-                    pending
-                        .oldest
-                        .is_some_and(|oldest| oldest.elapsed() >= maximum)
-                });
-            if due {
+        let candidate_groups = if self.max_chunk_age.is_some() {
+            0..self.groups.len()
+        } else {
+            group_index..group_index + 1
+        };
+        for index in candidate_groups {
+            let group = &self.groups[index];
+            if group
+                .chunk
+                .as_ref()
+                .is_some_and(|chunk| chunk.is_due(group.chunk_target, self.max_chunk_age, now))
+            {
                 self.flush_group(index)?;
             }
         }
@@ -168,35 +226,27 @@ impl<W: Write + Seek> GroupedWriter<W> {
     }
 
     fn flush_group(&mut self, index: usize) -> McapResult<()> {
-        let messages = std::mem::take(&mut self.groups[index].messages);
-        self.groups[index].bytes = 0;
-        self.groups[index].oldest = None;
-        if messages.is_empty() {
+        let Some(chunk) = self.groups[index].chunk.take() else {
             return Ok(());
-        }
-        let result = (|| {
-            let writer = self.active()?;
-            for message in messages {
+        };
+        self.write_to_archive(|writer| {
+            for message in chunk.messages {
                 writer.write_to_known_channel(&message.header, &message.data)?;
             }
             writer.flush()
-        })();
-        if result.is_err() {
-            self.state = WriterState::Failed;
-        }
-        result
+        })
     }
 
     pub fn write_metadata(&mut self, metadata: &mcap::records::Metadata) -> McapResult<()> {
         // Keep records after all messages submitted before them, and let pending
         // messages share the definitions chunk rather than emitting a metadata-only flush.
         self.flush()?;
-        self.active()?.write_metadata(metadata)
+        self.write_to_archive(|writer| writer.write_metadata(metadata))
     }
 
     pub fn attach(&mut self, attachment: &mcap::Attachment<'_>) -> McapResult<()> {
         self.flush()?;
-        self.active()?.attach(attachment)
+        self.write_to_archive(|writer| writer.attach(attachment))
     }
 
     /// Flush waiting messages from every group, including groups below their target.
@@ -205,33 +255,30 @@ impl<W: Write + Seek> GroupedWriter<W> {
         for index in 0..self.groups.len() {
             self.flush_group(index)?;
         }
-        self.active()?.flush()
+        self.write_to_archive(Writer::flush)
     }
 
     pub fn finish(&mut self) -> McapResult<()> {
-        if self.state == WriterState::Finished {
+        if matches!(self.state, WriterState::Finished) {
             return Ok(());
         }
-        let result = (|| {
-            self.flush()?;
-            self.active()?.finish()?;
-            Ok(())
-        })();
-        if result.is_ok() {
-            self.state = WriterState::Finished;
-        } else {
-            self.state = WriterState::Failed;
-        }
-        result
+        self.flush()?;
+        let WriterState::Active(mut writer) =
+            std::mem::replace(&mut self.state, WriterState::Failed)
+        else {
+            return Err(McapError::AttemptedWriteAfterFailure);
+        };
+        let finish_result = writer.finish();
+        // Upstream finish flushes the footer. Release the stream in both outcomes.
+        let _ = writer.into_inner();
+        finish_result?;
+        self.state = WriterState::Finished;
+        Ok(())
     }
 }
 
 impl<W: Write + Seek> Drop for GroupedWriter<W> {
     fn drop(&mut self) {
-        // Upstream's Drop auto-finishes. Suppress it on abort/error: callers must
-        // never mistake an incomplete write for a successful finalized recording.
-        if let Some(writer) = self.writer.take() {
-            let _ = writer.into_inner();
-        }
+        self.abandon_writer();
     }
 }

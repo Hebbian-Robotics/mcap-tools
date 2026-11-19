@@ -94,3 +94,32 @@ test("video payload survives unknown uint64 and length-delimited fields", () => 
   ]);
   expect(compressedVideoData(encoded)).toEqual(new Uint8Array([4, 5]));
 });
+
+test("video payload uses the last occurrence of the protobuf data field", () => {
+  const encoded = Uint8Array.of(
+    0x1a,
+    1,
+    4,
+    0x1a,
+    2,
+    5,
+    6,
+    // An unknown group also has a field numbered 3, scoped to the group.
+    0x2b,
+    0x1a,
+    1,
+    9,
+    0x2c,
+  );
+  expect(compressedVideoData(encoded)).toEqual(Uint8Array.of(5, 6));
+});
+
+test("remux rejects packets whose capture times repeat", async () => {
+  const packets = videoPackets();
+  const [first, second] = packets;
+  if (!first || !second) throw new Error("Fixture needs two video packets");
+  second.logTimeNanoseconds = first.logTimeNanoseconds;
+  await expect(remuxToMp4(packets, 16, 8)).rejects.toThrow(
+    "strictly increasing",
+  );
+});

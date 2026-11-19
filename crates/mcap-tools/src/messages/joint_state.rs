@@ -47,29 +47,20 @@ pub fn encode(
             "JointState velocities and efforts must be empty or have one value per joint",
         ));
     }
-    for length in std::iter::once(names.len())
-        .chain(std::iter::once(frame_id.len().saturating_add(1)))
-        .chain(names.iter().map(|name| name.len().saturating_add(1)))
-    {
-        u32::try_from(length)
-            .map_err(|_| invalid_input("JointState field exceeds CDR length range"))?;
-    }
-    if frame_id.contains('\0') || names.iter().any(|name| name.contains('\0')) {
-        return Err(invalid_input(
-            "CDR strings cannot contain embedded NUL characters",
-        ));
-    }
+    let cdr_error = |error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error);
+    let nanoseconds = u32::try_from(timestamp_nanoseconds % 1_000_000_000)
+        .map_err(|_| invalid_input("JointState timestamp exceeds ROS 2 nanoseconds range"))?;
     let mut cdr = CdrWriter::new();
     cdr.write_i32(seconds);
-    cdr.write_u32(u32::try_from(timestamp_nanoseconds % 1_000_000_000).unwrap_or(0));
-    cdr.write_string(frame_id);
-    cdr.write_length(names.len());
+    cdr.write_u32(nanoseconds);
+    cdr.write_string(frame_id).map_err(cdr_error)?;
+    cdr.write_length(names.len()).map_err(cdr_error)?;
     for name in names {
-        cdr.write_string(name);
+        cdr.write_string(name).map_err(cdr_error)?;
     }
-    cdr.write_doubles(positions);
-    cdr.write_doubles(velocities);
-    cdr.write_doubles(efforts);
+    cdr.write_doubles(positions).map_err(cdr_error)?;
+    cdr.write_doubles(velocities).map_err(cdr_error)?;
+    cdr.write_doubles(efforts).map_err(cdr_error)?;
     Ok(cdr.into_bytes())
 }
 

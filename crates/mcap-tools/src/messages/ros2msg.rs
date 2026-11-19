@@ -11,11 +11,29 @@ const MAXIMUM_NESTING_DEPTH: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FieldKind {
-    /// A fixed-size value of this many bytes.
-    Primitive(usize),
+    Primitive(PrimitiveKind),
     String,
     /// A nested message, named `package/Type`.
     Message(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PrimitiveKind {
+    Uint8,
+    Int32,
+    Uint32,
+    // For fields the codec copies without interpreting the value, only alignment matters.
+    Other { size: usize },
+}
+
+impl PrimitiveKind {
+    fn size(self) -> usize {
+        match self {
+            Self::Uint8 => 1,
+            Self::Int32 | Self::Uint32 => 4,
+            Self::Other { size } => size,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,12 +68,15 @@ fn short_type_name(name: &str) -> String {
     }
 }
 
-fn primitive_size(name: &str) -> Option<usize> {
+fn primitive_kind(name: &str) -> Option<PrimitiveKind> {
     match name {
-        "bool" | "byte" | "char" | "int8" | "uint8" => Some(1),
-        "int16" | "uint16" => Some(2),
-        "int32" | "uint32" | "float32" => Some(4),
-        "int64" | "uint64" | "float64" => Some(8),
+        "uint8" => Some(PrimitiveKind::Uint8),
+        "int32" => Some(PrimitiveKind::Int32),
+        "uint32" => Some(PrimitiveKind::Uint32),
+        "bool" | "byte" | "char" | "int8" => Some(PrimitiveKind::Other { size: 1 }),
+        "int16" | "uint16" => Some(PrimitiveKind::Other { size: 2 }),
+        "float32" => Some(PrimitiveKind::Other { size: 4 }),
+        "int64" | "uint64" | "float64" => Some(PrimitiveKind::Other { size: 8 }),
         _ => None,
     }
 }
@@ -67,7 +88,12 @@ fn parse_field_type(type_text: &str, package: &str) -> Result<(FieldKind, Arity)
             let bound = suffix
                 .strip_suffix(']')
                 .ok_or_else(|| schema_error(format!("malformed array type {type_text:?}")))?;
-            let arity = if bound.is_empty() || bound.starts_with("<=") {
+            let arity = if bound.is_empty() {
+                Arity::Sequence
+            } else if let Some(maximum) = bound.strip_prefix("<=") {
+                maximum
+                    .parse::<u32>()
+                    .map_err(|_| schema_error(format!("malformed array bound in {type_text:?}")))?;
                 Arity::Sequence
             } else {
                 Arity::Fixed(bound.parse().map_err(|_| {
@@ -77,9 +103,18 @@ fn parse_field_type(type_text: &str, package: &str) -> Result<(FieldKind, Arity)
             (element, arity)
         }
     };
-    let element = element.split_once("<=").map_or(element, |(base, _)| base);
-    let kind = if let Some(size) = primitive_size(element) {
-        FieldKind::Primitive(size)
+    let element = if let Some((base, maximum)) = element.split_once("<=") {
+        if !matches!(base, "string" | "wstring") || maximum.parse::<u32>().is_err() {
+            return Err(schema_error(format!(
+                "malformed string bound in {type_text:?}"
+            )));
+        }
+        base
+    } else {
+        element
+    };
+    let kind = if let Some(primitive) = primitive_kind(element) {
+        FieldKind::Primitive(primitive)
     } else if element == "string" {
         FieldKind::String
     } else if element == "wstring" {
@@ -96,6 +131,7 @@ fn parse_field_type(type_text: &str, package: &str) -> Result<(FieldKind, Arity)
 
 fn parse_fields(definition: &[&str], package: &str) -> Result<Vec<Field>, MessageError> {
     let mut fields = Vec::new();
+    let mut field_names = HashSet::new();
     for line in definition {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -116,6 +152,9 @@ fn parse_fields(definition: &[&str], package: &str) -> Result<Vec<Field>, Messag
             // A constant is part of the definition but not of the serialized message.
             continue;
         }
+        if !field_names.insert(name) {
+            return Err(schema_error(format!("duplicate field {name:?}")));
+        }
         let (kind, arity) = parse_field_type(type_text, package)?;
         fields.push(Field {
             name: name.to_owned(),
@@ -127,24 +166,24 @@ fn parse_fields(definition: &[&str], package: &str) -> Result<Vec<Field>, Messag
 }
 
 fn time_fields() -> Vec<Field> {
-    ["sec", "nanosec"]
-        .into_iter()
-        .map(|name| Field {
-            name: name.to_owned(),
-            kind: FieldKind::Primitive(4),
-            arity: Arity::Single,
-        })
-        .collect()
+    [
+        ("sec", PrimitiveKind::Int32),
+        ("nanosec", PrimitiveKind::Uint32),
+    ]
+    .into_iter()
+    .map(|(name, kind)| Field {
+        name: name.to_owned(),
+        kind: FieldKind::Primitive(kind),
+        arity: Arity::Single,
+    })
+    .collect()
 }
 
 impl MessageDefinitions {
     pub(crate) fn parse(schema_name: &str, schema_text: &str) -> Result<Self, MessageError> {
         let root = short_type_name(schema_name);
         // Recorders may leave these two out because every ROS 2 reader knows them.
-        let mut fields_by_type: HashMap<String, Vec<Field>> = HashMap::from([
-            ("builtin_interfaces/Time".to_owned(), time_fields()),
-            ("builtin_interfaces/Duration".to_owned(), time_fields()),
-        ]);
+        let mut fields_by_type = HashMap::new();
         let lines: Vec<&str> = schema_text.lines().collect();
         let is_separator =
             |line: &&str| line.trim().len() >= 3 && line.trim().bytes().all(|byte| byte == b'=');
@@ -161,26 +200,33 @@ impl MessageDefinitions {
                 None => return Err(schema_error("a nested definition has no MSG: line")),
             };
             let package = type_name.split('/').next().unwrap_or_default().to_owned();
-            fields_by_type.insert(type_name, parse_fields(definition, &package)?);
+            let fields = parse_fields(definition, &package)?;
+            if fields_by_type.insert(type_name.clone(), fields).is_some() {
+                return Err(schema_error(format!(
+                    "duplicate definition for message {type_name:?}"
+                )));
+            }
+        }
+        for builtin in ["builtin_interfaces/Time", "builtin_interfaces/Duration"] {
+            fields_by_type
+                .entry(builtin.to_owned())
+                .or_insert_with(time_fields);
         }
         let definitions = Self {
             root,
             fields_by_type,
         };
-        definitions.require_resolvable(&definitions.root, &mut Vec::new(), &mut HashSet::new())?;
+        definitions.nesting_depth(&definitions.root, &mut Vec::new(), &mut HashMap::new())?;
         Ok(definitions)
     }
 
     /// Every nested type is defined, and nesting ends: a message cannot contain itself.
-    fn require_resolvable<'definitions>(
+    fn nesting_depth<'definitions>(
         &'definitions self,
         type_name: &'definitions str,
         enclosing: &mut Vec<&'definitions str>,
-        resolved: &mut HashSet<&'definitions str>,
-    ) -> Result<(), MessageError> {
-        if resolved.contains(type_name) {
-            return Ok(());
-        }
+        depths: &mut HashMap<&'definitions str, usize>,
+    ) -> Result<usize, MessageError> {
         if enclosing.contains(&type_name) {
             return Err(schema_error(format!(
                 "message {type_name:?} contains itself"
@@ -189,19 +235,26 @@ impl MessageDefinitions {
         if enclosing.len() >= MAXIMUM_NESTING_DEPTH {
             return Err(schema_error("message definitions nest too deeply"));
         }
+        if let Some(&depth) = depths.get(type_name) {
+            if enclosing.len() + depth > MAXIMUM_NESTING_DEPTH {
+                return Err(schema_error("message definitions nest too deeply"));
+            }
+            return Ok(depth);
+        }
         let fields = self
             .fields_by_type
             .get(type_name)
             .ok_or_else(|| schema_error(format!("no definition for message {type_name:?}")))?;
         enclosing.push(type_name);
+        let mut depth = 1;
         for field in fields {
             if let FieldKind::Message(nested) = &field.kind {
-                self.require_resolvable(nested, enclosing, resolved)?;
+                depth = depth.max(1 + self.nesting_depth(nested, enclosing, depths)?);
             }
         }
         enclosing.pop();
-        resolved.insert(type_name);
-        Ok(())
+        depths.insert(type_name, depth);
+        Ok(depth)
     }
 
     pub(crate) fn root_fields(&self) -> &[Field] {
@@ -219,26 +272,31 @@ impl MessageDefinitions {
         &self,
         field: &Field,
         reader: &mut CdrReader<'_>,
-        writer: &mut Option<CdrWriter>,
+        mut writer: Option<&mut CdrWriter>,
     ) -> Result<(), MessageError> {
         let count = match field.arity {
             Arity::Single => return self.copy_value(&field.kind, reader, writer),
             Arity::Fixed(count) => count,
             Arity::Sequence => {
                 let count = reader.read_u32()?;
-                if let Some(writer) = writer {
+                if let Some(writer) = writer.as_deref_mut() {
                     writer.write_u32(count);
                 }
-                usize::try_from(count).unwrap_or(usize::MAX)
+                usize::try_from(count)
+                    .map_err(|_| MessageError::Cdr("array length exceeds platform limits"))?
             }
         };
         // Every element occupies at least one byte, so a larger count is corrupt.
         if count > reader.remaining() {
             return Err(MessageError::Cdr("array is longer than the message"));
         }
-        if let FieldKind::Primitive(size) = field.kind {
+        if let FieldKind::Primitive(primitive) = field.kind {
+            let size = primitive.size();
             if count > 0 {
-                let bytes = reader.take_aligned(size, count.saturating_mul(size))?;
+                let length = count
+                    .checked_mul(size)
+                    .ok_or(MessageError::Cdr("array length exceeds platform limits"))?;
+                let bytes = reader.take_aligned(size, length)?;
                 if let Some(writer) = writer {
                     writer.write_raw(size, bytes);
                 }
@@ -246,7 +304,7 @@ impl MessageDefinitions {
             return Ok(());
         }
         for _ in 0..count {
-            self.copy_value(&field.kind, reader, writer)?;
+            self.copy_value(&field.kind, reader, writer.as_deref_mut())?;
         }
         Ok(())
     }
@@ -255,19 +313,20 @@ impl MessageDefinitions {
         &self,
         kind: &FieldKind,
         reader: &mut CdrReader<'_>,
-        writer: &mut Option<CdrWriter>,
+        mut writer: Option<&mut CdrWriter>,
     ) -> Result<(), MessageError> {
         match kind {
-            FieldKind::Primitive(size) => {
-                let bytes = reader.take_aligned(*size, *size)?;
+            FieldKind::Primitive(primitive) => {
+                let size = primitive.size();
+                let bytes = reader.take_aligned(size, size)?;
                 if let Some(writer) = writer {
-                    writer.write_raw(*size, bytes);
+                    writer.write_raw(size, bytes);
                 }
             }
             FieldKind::String => {
                 let stored = reader.read_bytes()?;
                 if let Some(writer) = writer {
-                    writer.write_bytes(stored);
+                    writer.write_bytes(stored)?;
                 }
             }
             FieldKind::Message(type_name) => {
@@ -275,12 +334,12 @@ impl MessageDefinitions {
                 if fields.is_empty() {
                     // ROS 2 serializes a message without fields as one placeholder byte.
                     let placeholder = reader.take(1)?;
-                    if let Some(writer) = writer {
+                    if let Some(writer) = writer.as_deref_mut() {
                         writer.write_raw(1, placeholder);
                     }
                 }
                 for field in fields {
-                    self.copy_field(field, reader, writer)?;
+                    self.copy_field(field, reader, writer.as_deref_mut())?;
                 }
             }
         }
@@ -296,7 +355,7 @@ impl MessageDefinitions {
     reason = "Test assertions fail immediately on unexpected outcomes"
 )]
 mod tests {
-    use super::{Arity, FieldKind, MessageDefinitions};
+    use super::{Arity, FieldKind, MessageDefinitions, PrimitiveKind};
 
     #[test]
     fn constants_comments_and_defaults_are_not_fields() {
@@ -313,7 +372,11 @@ mod tests {
         assert_eq!(
             fields,
             [
-                ("count", FieldKind::Primitive(4), Arity::Single),
+                (
+                    "count",
+                    FieldKind::Primitive(PrimitiveKind::Int32),
+                    Arity::Single
+                ),
                 ("names", FieldKind::String, Arity::Sequence),
             ]
         );

@@ -31,13 +31,14 @@ export type ClockListener = (
   buffering: boolean,
 ) => void;
 
+type PlaybackMode = "paused" | "buffering" | "playing" | "skimming";
+
 export class RecordingClock {
   currentTime: number;
   playing = false;
   playbackRate = 1;
-  buffering = false;
   private lastFrameAt: number | null = null;
-  private frame: number;
+  private frame: number | null;
   private readonly listeners = new Set<ClockListener>();
 
   constructor(
@@ -57,12 +58,16 @@ export class RecordingClock {
   }
 
   destroy(): void {
+    if (this.frame === null) return;
     cancelAnimationFrame(this.frame);
+    this.frame = null;
+    this.playing = false;
     for (const clip of this.clips) if (!clip.video.paused) clip.video.pause();
     this.listeners.clear();
   }
 
   play(): void {
+    if (this.frame === null) return;
     if (this.currentTime >= this.endTime) this.currentTime = this.startTime;
     this.playing = true;
   }
@@ -77,31 +82,39 @@ export class RecordingClock {
   }
 
   seek(time: number): void {
+    if (this.frame === null) return;
     this.currentTime = Math.min(this.endTime, Math.max(this.startTime, time));
-    this.syncClips();
+    this.syncClips(this.playbackMode());
     this.notify();
   }
 
   private advance(now: number): void {
+    if (this.frame === null) return;
     const elapsedSeconds =
       this.lastFrameAt === null ? 0 : (now - this.lastFrameAt) / 1000;
     this.lastFrameAt = now;
-    this.buffering =
-      this.playing && !this.isSkimming() && this.activeClipIsLoading();
-    if (this.playing && !this.buffering) {
+    const mode = this.playbackMode();
+    if (mode === "playing" || mode === "skimming") {
       this.currentTime += elapsedSeconds * this.playbackRate;
       if (this.currentTime >= this.endTime) {
         this.currentTime = this.endTime;
         this.playing = false;
       }
     }
-    this.syncClips();
+    this.syncClips(this.playbackMode());
     this.notify();
-    this.frame = requestAnimationFrame((next) => this.advance(next));
+    if (this.frame !== null)
+      this.frame = requestAnimationFrame((next) => this.advance(next));
   }
 
-  private isSkimming(): boolean {
-    return this.playing && this.playbackRate > MAXIMUM_CONTINUOUS_PLAYBACK_RATE;
+  get buffering(): boolean {
+    return this.playbackMode() === "buffering";
+  }
+
+  private playbackMode(): PlaybackMode {
+    if (!this.playing) return "paused";
+    if (this.playbackRate > MAXIMUM_CONTINUOUS_PLAYBACK_RATE) return "skimming";
+    return this.activeClipIsLoading() ? "buffering" : "playing";
   }
 
   private activeClipIsLoading(): boolean {
@@ -119,16 +132,17 @@ export class RecordingClock {
     return offset >= 0 && offset < clip.durationSeconds ? offset : null;
   }
 
-  private syncClips(): void {
+  private syncClips(mode: PlaybackMode): void {
     for (const clip of this.clips) {
       const offset = this.clipOffset(clip);
       const { video } = clip;
       clip.setIdle(offset === null);
+      if (this.frame === null) return;
       if (clip.failed || offset === null) {
         if (!video.paused) video.pause();
         continue;
       }
-      if (this.isSkimming()) {
+      if (mode === "skimming") {
         if (!video.paused) video.pause();
         if (
           !video.seeking &&
@@ -138,16 +152,21 @@ export class RecordingClock {
         continue;
       }
       // Faster playback drifts further between frames before it shows.
-      const tolerance = this.playing
-        ? PLAYING_DRIFT_TOLERANCE_SECONDS * Math.max(1, this.playbackRate)
-        : PAUSED_DRIFT_TOLERANCE_SECONDS;
+      const tolerance =
+        mode === "playing"
+          ? PLAYING_DRIFT_TOLERANCE_SECONDS * Math.max(1, this.playbackRate)
+          : PAUSED_DRIFT_TOLERANCE_SECONDS;
       if (!video.seeking && Math.abs(video.currentTime - offset) > tolerance)
         video.currentTime = offset;
       if (video.playbackRate !== this.playbackRate)
         video.playbackRate = this.playbackRate;
-      if (this.playing && video.paused)
-        void video.play().catch(() => undefined);
-      else if (!this.playing && !video.paused) video.pause();
+      // A play request can start a deferred load. Ready clips still hold
+      // their positions until the clock can resume.
+      const shouldPlay =
+        mode === "playing" ||
+        (mode === "buffering" && video.readyState < HAVE_FUTURE_DATA);
+      if (shouldPlay && video.paused) void video.play().catch(() => undefined);
+      else if (!shouldPlay && !video.paused) video.pause();
     }
   }
 

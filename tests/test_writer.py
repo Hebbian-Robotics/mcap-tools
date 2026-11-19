@@ -6,10 +6,12 @@ summary/statistics/index bookkeeping, and -- the whole point -- chunks that
 never mix channels from different topic groups.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
-from typing import IO, Any, Literal
+from typing import IO, TYPE_CHECKING, Any, Literal
 
 import pytest
 from hebbian_mcap import (
@@ -24,6 +26,9 @@ from mcap.opcode import Opcode
 from mcap.reader import make_reader
 from mcap.records import Chunk, Message, MessageIndex
 from mcap.stream_reader import StreamReader, breakup_chunk
+
+if TYPE_CHECKING:
+    from _typeshed import ReadableBuffer
 
 CAMERA_GROUP = "cameras"
 STATE_GROUP = "state"
@@ -428,6 +433,27 @@ def test_failed_finish_cannot_later_appear_successful() -> None:
         writer.finish()
 
 
+def test_failed_metadata_write_cannot_finalize_a_partial_record() -> None:
+    class FailingStream(BytesIO):
+        fail_next_write = False
+
+        def write(self, data: ReadableBuffer, /) -> int:
+            if self.fail_next_write:
+                self.fail_next_write = False
+                super().write(memoryview(data)[:1])
+                raise OSError("stream stopped mid-record")
+            return super().write(data)
+
+    stream = FailingStream()
+    writer = GroupedMcapWriter(stream)
+    stream.fail_next_write = True
+    with pytest.raises(OSError, match="stopped mid-record"):
+        writer.add_metadata("capture", {"location": "test"})
+    with pytest.raises(RuntimeError, match="writer is failed"):
+        writer.finish()
+    assert not stream.getvalue().endswith(b"MCAP0\r\n")
+
+
 class TestPerGroupChunkTargets:
     """Each group honors its own chunk target, including fallback targets."""
 
@@ -516,3 +542,23 @@ def test_writer_abort_preserves_previously_published_file(tmp_path: Path) -> Non
             writer.register_channel("/t", "json", NO_SCHEMA_ID, group="state")
             raise RuntimeError("boom")
     assert path.read_bytes() == b"previous valid bytes"
+
+
+def test_relative_output_path_stays_in_the_original_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_directory = tmp_path / "capture"
+    other_directory = tmp_path / "other"
+    original_directory.mkdir()
+    other_directory.mkdir()
+    monkeypatch.chdir(original_directory)
+    with GroupedMcapWriter("recording.mcap") as writer:
+        channel = writer.register_channel("/state", "json", NO_SCHEMA_ID, group=STATE_GROUP)
+        writer.write_message(channel, 0, b'{"position": 1}')
+        monkeypatch.chdir(other_directory)
+
+    with (original_directory / "recording.mcap").open("rb") as stream:
+        assert [message.data for _, _, message in make_reader(stream).iter_messages()] == [
+            b'{"position": 1}'
+        ]
+    assert not (other_directory / "recording.mcap").exists()

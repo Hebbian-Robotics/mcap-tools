@@ -20,11 +20,15 @@ export interface VideoPacket {
 const NANOSECONDS_PER_SECOND = 1_000_000_000n;
 const IDR_NAL_UNIT_TYPE = 5;
 const SPS_NAL_UNIT_TYPE = 7;
+const PPS_NAL_UNIT_TYPE = 8;
+const VIDEO_DATA_FIELD = 3;
 
 /** The `data` field (number 3) of a `foxglove.CompressedVideo` message. */
 export function compressedVideoData(message: Uint8Array): Uint8Array {
   let position = 0;
-  function varint(): number {
+  let data: Uint8Array | undefined;
+  const openGroups: number[] = [];
+  function readVarint(): number {
     let value = 0;
     for (let shift = 0; shift < 70; shift += 7) {
       const byte = message[position++];
@@ -42,58 +46,93 @@ export function compressedVideoData(message: Uint8Array): Uint8Array {
     position += length;
   }
   while (position < message.length) {
-    const key = varint();
+    const key = readVarint();
     if (!Number.isSafeInteger(key) || key < 8 || key > 0xffffffff)
       throw new Error("Invalid video message field");
     const wireType = key & 7;
+    const fieldNumber = key >>> 3;
+    const isVideoData =
+      openGroups.length === 0 && fieldNumber === VIDEO_DATA_FIELD;
+    if (isVideoData && wireType !== 2)
+      throw new Error("Video data field is not bytes");
     if (wireType === 2) {
-      const length = varint();
+      const length = readVarint();
       const start = position;
       skip(length);
-      if (Math.floor(key / 8) === 3) return message.subarray(start, position);
+      if (isVideoData) data = message.subarray(start, position);
     } else if (wireType === 0) {
-      varint();
+      readVarint();
     } else if (wireType === 1) {
       skip(8);
+    } else if (wireType === 3) {
+      openGroups.push(fieldNumber);
+    } else if (wireType === 4) {
+      if (openGroups.pop() !== fieldNumber)
+        throw new Error("Mismatched protobuf group in video message");
     } else if (wireType === 5) {
       skip(4);
     } else {
       throw new Error("Unsupported video message encoding");
     }
   }
-  throw new Error("Video message has no data");
+  if (openGroups.length > 0) throw new Error("Truncated video message group");
+  if (data === undefined) throw new Error("Video message has no data");
+  return data;
 }
 
-function nalUnitTypes(accessUnit: Uint8Array): number[] {
-  const types: number[] = [];
+function* annexBNalUnits(accessUnit: Uint8Array): Generator<Uint8Array> {
+  let start: number | undefined;
   for (let index = 0; index + 3 < accessUnit.length; index++) {
     if (
       accessUnit[index] === 0 &&
       accessUnit[index + 1] === 0 &&
       accessUnit[index + 2] === 1
     ) {
-      types.push((accessUnit[index + 3] ?? 0) & 0x1f);
+      if (start !== undefined) {
+        const end =
+          index > start && accessUnit[index - 1] === 0 ? index - 1 : index;
+        yield accessUnit.subarray(start, end);
+      }
+      start = index + 3;
       index += 2;
     }
   }
-  return types;
+  if (start !== undefined) yield accessUnit.subarray(start);
 }
 
-/** `avc1.PPCCLL` from the first SPS, which the browser's decoder needs to be told. */
-function codecString(firstKeyFrame: Uint8Array): string {
-  for (let index = 0; index + 6 < firstKeyFrame.length; index++) {
-    if (
-      firstKeyFrame[index] === 0 &&
-      firstKeyFrame[index + 1] === 0 &&
-      firstKeyFrame[index + 2] === 1 &&
-      ((firstKeyFrame[index + 3] ?? 0) & 0x1f) === SPS_NAL_UNIT_TYPE
-    ) {
-      const hex = (byte: number | undefined) =>
-        (byte ?? 0).toString(16).padStart(2, "0");
-      return `avc1.${hex(firstKeyFrame[index + 4])}${hex(firstKeyFrame[index + 5])}${hex(firstKeyFrame[index + 6])}`;
-    }
+function nalUnitType(unit: Uint8Array): number {
+  return (unit[0] ?? 0) & 0x1f;
+}
+
+function packetType(data: Uint8Array): EncodedPacket["type"] {
+  let foundNalUnit = false;
+  for (const unit of annexBNalUnits(data)) {
+    if (nalUnitType(unit) === IDR_NAL_UNIT_TYPE) return "key";
+    foundNalUnit = true;
   }
-  throw new Error("The first video packet has no SPS");
+  if (!foundNalUnit) throw new Error("Video packet has no Annex B NAL units");
+  return "delta";
+}
+
+function firstPacketCodec(units: readonly Uint8Array[]): string {
+  const sps = units.find((unit) => nalUnitType(unit) === SPS_NAL_UNIT_TYPE);
+  if (
+    !sps ||
+    sps.length < 4 ||
+    !units.some(
+      (unit) => nalUnitType(unit) === PPS_NAL_UNIT_TYPE && unit.length > 1,
+    ) ||
+    !units.some((unit) => nalUnitType(unit) === IDR_NAL_UNIT_TYPE)
+  ) {
+    throw new Error(
+      "The first video packet must be a key frame with SPS and PPS",
+    );
+  }
+  // avc1.PPCCLL encodes the profile, compatibility flags and level from the SPS.
+  const codecBytes = Array.from(sps.subarray(1, 4), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+  return `avc1.${codecBytes}`;
 }
 
 /**
@@ -101,51 +140,62 @@ function codecString(firstKeyFrame: Uint8Array): string {
  * key frame carrying SPS and PPS, as the recorder writes them.
  */
 export async function remuxToMp4(
-  packets: VideoPacket[],
+  packets: readonly VideoPacket[],
   width: number,
   height: number,
 ): Promise<Uint8Array> {
-  const first = packets[0];
-  if (!first) throw new Error("No video packets to play");
-  const start = first.logTimeNanoseconds;
+  const firstPacket = packets[0];
+  if (!firstPacket) throw new Error("No video packets to play");
+  if (
+    !Number.isSafeInteger(width) ||
+    width <= 0 ||
+    !Number.isSafeInteger(height) ||
+    height <= 0
+  )
+    throw new RangeError("Video dimensions must be positive integers");
+  const firstPacketUnits = Array.from(annexBNalUnits(firstPacket.data));
+  const decoderConfig = {
+    codec: firstPacketCodec(firstPacketUnits),
+    codedWidth: width,
+    codedHeight: height,
+  };
+  const seconds = (nanoseconds: bigint) =>
+    Number(nanoseconds) / Number(NANOSECONDS_PER_SECOND);
+  const firstTimestamp = firstPacket.logTimeNanoseconds;
   const output = new Output({
     format: new Mp4OutputFormat({ fastStart: "in-memory" }),
     target: new BufferTarget(),
   });
   const source = new EncodedVideoPacketSource("avc");
   output.addVideoTrack(source);
-  await output.start();
-  const seconds = (time: bigint) =>
-    Number(time - start) / Number(NANOSECONDS_PER_SECOND);
-  for (const [index, packet] of packets.entries()) {
-    const next = packets[index + 1];
-    const previous = packets[index - 1];
-    const duration = next
-      ? seconds(next.logTimeNanoseconds) - seconds(packet.logTimeNanoseconds)
-      : previous
-        ? seconds(packet.logTimeNanoseconds) -
-          seconds(previous.logTimeNanoseconds)
-        : 1 / 30;
-    const keyFrame = nalUnitTypes(packet.data).includes(IDR_NAL_UNIT_TYPE);
-    await source.add(
-      new EncodedPacket(
+  try {
+    await output.start();
+    for (const [index, packet] of packets.entries()) {
+      const next = packets[index + 1];
+      const previous = packets[index - 1];
+      const interval = next
+        ? next.logTimeNanoseconds - packet.logTimeNanoseconds
+        : previous && packet.logTimeNanoseconds - previous.logTimeNanoseconds;
+      if (interval !== undefined && interval <= 0n)
+        throw new Error(
+          "Video packet capture times must be strictly increasing",
+        );
+      const encodedPacket = new EncodedPacket(
         packet.data,
-        keyFrame ? "key" : "delta",
-        seconds(packet.logTimeNanoseconds),
-        duration,
-      ),
-      index === 0
-        ? {
-            decoderConfig: {
-              codec: codecString(first.data),
-              codedWidth: width,
-              codedHeight: height,
-            },
-          }
-        : undefined,
-    );
+        index === 0 ? "key" : packetType(packet.data),
+        seconds(packet.logTimeNanoseconds - firstTimestamp),
+        interval === undefined ? 1 / 30 : seconds(interval),
+      );
+      await source.add(
+        encodedPacket,
+        index === 0 ? { decoderConfig } : undefined,
+      );
+    }
+    await output.finalize();
+  } catch (error) {
+    await output.cancel().catch(() => undefined);
+    throw error;
   }
-  await output.finalize();
   const bytes = output.target.buffer;
   if (!bytes) throw new Error("The MP4 could not be written");
   return new Uint8Array(bytes);

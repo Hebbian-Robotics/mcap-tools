@@ -24,14 +24,16 @@ const reader = await McapIndexedReader.Initialize({
 The server must support HEAD with Content-Length. Range responses avoid fetching
 the whole recording; a server returning the complete file is also supported.
 Cross-origin servers must allow the requests and expose Content-Length through
-CORS. Supply decompression handlers to the MCAP reader for compressed files.
+CORS. Expose Content-Range as well to let the reader verify the response
+offset. Supply decompression handlers to the MCAP reader for compressed files.
 
 `compressedVideoData` extracts the data field from a
 [Foxglove CompressedVideo](https://docs.foxglove.dev/docs/visualization/message-schemas/compressed-video)
 protobuf message. `remuxToMp4(packets, width, height)` packages ordered Annex B
 H.264 access units without re-encoding. The first packet must be a keyframe with
 SPS/PPS; each packet carries its capture time as Unix nanoseconds. Split clips
-when picture size changes. Remuxing uses [Mediabunny](https://mediabunny.dev/).
+when picture size changes, and pass packets with strictly increasing capture
+times. Remuxing uses [Mediabunny](https://mediabunny.dev/).
 
 `RecordingClock` coordinates `SyncedClip` objects against one Unix-seconds
 clock. It pauses time while active clips load, lets failed clips stop blocking

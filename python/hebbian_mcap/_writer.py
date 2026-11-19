@@ -2,15 +2,14 @@
 
 import tempfile
 from collections.abc import Mapping
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from types import TracebackType
 from typing import IO, NewType, Self
 
-from ._native import NativeWriter
+from ._native import DEFAULT_CHUNK_SIZE_BYTES, DEFAULT_LIBRARY_IDENTIFIER, NativeWriter
 
-DEFAULT_CHUNK_SIZE_BYTES = 1024 * 1024
-DEFAULT_LIBRARY_IDENTIFIER = "hebbian-mcap/0.1.2"
 SchemaId = NewType("SchemaId", int)
 ChannelId = NewType("ChannelId", int)
 NO_SCHEMA_ID = SchemaId(0)
@@ -23,9 +22,38 @@ class CompressionType(StrEnum):
 
 class _WriterState(StrEnum):
     ACTIVE = "active"
+    FINALIZING = "finalizing"
     FINISHED = "finished"
     ABORTED = "aborted"
     FAILED = "failed"
+
+
+@dataclass(frozen=True, slots=True)
+class _StagedOutput:
+    destination: Path
+    temporary_path: Path
+    stream: IO[bytes]
+
+    @classmethod
+    def create(cls, destination: Path) -> Self:
+        stream = tempfile.NamedTemporaryFile(  # noqa: SIM115 -- Owned until finish or abort.
+            mode="w+b",
+            dir=destination.parent,
+            prefix=f".{destination.name}.",
+            suffix=".tmp",
+            delete=False,
+        )
+        return cls(destination, Path(stream.name), stream)
+
+    def publish(self) -> None:
+        self.stream.close()
+        self.temporary_path.replace(self.destination)
+
+    def discard(self) -> None:
+        try:
+            self.stream.close()
+        finally:
+            self.temporary_path.unlink(missing_ok=True)
 
 
 class GroupedMcapWriter:
@@ -77,32 +105,17 @@ class GroupedMcapWriter:
                 f"unknown compression {compression!r}; expected one of {valid_compression_types}"
             ) from None
 
+        self._staged_output: _StagedOutput | None = None
         if isinstance(output, str | Path):
-            # Path outputs publish atomically: all bytes go to a sibling temp
-            # file, and finish() replaces the destination only after the
-            # closing magic and summary have been written successfully. A
-            # failed rewrite therefore preserves the previous valid episode.
-            self._output_path: Path | None = Path(output)
-            temporary_stream = tempfile.NamedTemporaryFile(  # noqa: SIM115
-                mode="w+b",
-                dir=self._output_path.parent,
-                prefix=f".{self._output_path.name}.",
-                suffix=".tmp",
-                delete=False,
-            )
-            self._temporary_output_path: Path | None = Path(temporary_stream.name)
-            self._stream: IO[bytes] = temporary_stream
-            self._owns_stream = True
+            self._staged_output = _StagedOutput.create(Path(output).absolute())
+            stream = self._staged_output.stream
         else:
-            self._output_path = None
-            self._temporary_output_path = None
-            self._stream = output
-            self._owns_stream = False
+            stream = output
 
         self._state = _WriterState.ACTIVE
         try:
             self._native = NativeWriter(
-                self._stream,
+                stream,
                 resolved_default_chunk_size,
                 chunk_size_by_group,
                 compression_type.value,
@@ -174,15 +187,11 @@ class GroupedMcapWriter:
         if self._state is _WriterState.FINISHED:
             return
         self._raise_if_not_active("finish")
+        self._state = _WriterState.FINALIZING
         try:
             self._native.finish()
-            self._stream.flush()
-            self._native.abort()  # Release the output before closing/replacing it on Windows.
-            if self._owns_stream:
-                self._stream.close()
-                assert self._temporary_output_path is not None
-                assert self._output_path is not None
-                self._temporary_output_path.replace(self._output_path)
+            if self._staged_output is not None:
+                self._staged_output.publish()
         except BaseException:
             self._state = _WriterState.FAILED
             self._native.abort()
@@ -202,16 +211,14 @@ class GroupedMcapWriter:
                 self._state = _WriterState.ABORTED
                 self._native.abort()
                 self._discard_temporary_output()
+            case _WriterState.FINALIZING:
+                raise RuntimeError("cannot abort: writer is finalizing")
             case _WriterState.FINISHED | _WriterState.ABORTED | _WriterState.FAILED:
                 return
 
     def _discard_temporary_output(self) -> None:
-        if not self._owns_stream:
-            return
-        if not self._stream.closed:
-            self._stream.close()
-        if self._temporary_output_path is not None:
-            self._temporary_output_path.unlink(missing_ok=True)
+        if self._staged_output is not None:
+            self._staged_output.discard()
 
     def _raise_if_not_active(self, operation: str) -> None:
         if self._state is not _WriterState.ACTIVE:

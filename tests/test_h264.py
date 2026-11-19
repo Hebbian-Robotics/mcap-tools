@@ -51,6 +51,12 @@ def test_scan_refuses_an_unparseable_slice_header() -> None:
         scan_picture_coding_types(unparseable_slice)
 
 
+def test_scan_refuses_an_unknown_slice_type() -> None:
+    invalid_slice = b"\x00\x00\x00\x01\x41" + _slice_header_rbsp(0, 10)
+    with pytest.raises(ValueError, match="invalid slice_type"):
+        scan_picture_coding_types(invalid_slice)
+
+
 def test_split_rejects_garbage_without_aud() -> None:
     with pytest.raises(ValueError, match="aud=1"):
         split_annex_b_stream(b"\xde\xad\xbe\xef" * 32)

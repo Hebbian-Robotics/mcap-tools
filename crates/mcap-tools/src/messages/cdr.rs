@@ -4,6 +4,8 @@ use super::MessageError;
 
 const LITTLE_ENDIAN_HEADER: [u8; 4] = [0, 1, 0, 0];
 const TRUNCATED: MessageError = MessageError::Cdr("field extends past the end of the message");
+const LENGTH_OUT_OF_RANGE: MessageError =
+    MessageError::OutOfRange("field exceeds CDR length range");
 
 pub(crate) struct CdrWriter {
     bytes: Vec<u8>,
@@ -55,28 +57,31 @@ impl CdrWriter {
         self.write_raw(4, &bytes);
     }
 
-    /// Callers check that lengths fit `u32` before encoding.
-    #[allow(
-        clippy::expect_used,
-        reason = "All encoders validate CDR field lengths before writing"
-    )]
-    pub(crate) fn write_length(&mut self, length: usize) {
-        self.write_u32(u32::try_from(length).expect("length checked before encoding"));
+    pub(crate) fn write_length(&mut self, length: usize) -> Result<(), MessageError> {
+        self.write_u32(u32::try_from(length).map_err(|_| LENGTH_OUT_OF_RANGE)?);
+        Ok(())
     }
 
-    pub(crate) fn write_string(&mut self, value: &str) {
-        self.write_length(value.len() + 1);
+    pub(crate) fn write_string(&mut self, value: &str) -> Result<(), MessageError> {
+        if value.contains('\0') {
+            return Err(MessageError::OutOfRange(
+                "CDR strings cannot contain embedded NUL characters",
+            ));
+        }
+        self.write_length(value.len().saturating_add(1))?;
         self.bytes.extend_from_slice(value.as_bytes());
         self.bytes.push(0);
+        Ok(())
     }
 
-    pub(crate) fn write_bytes(&mut self, values: &[u8]) {
-        self.write_length(values.len());
+    pub(crate) fn write_bytes(&mut self, values: &[u8]) -> Result<(), MessageError> {
+        self.write_length(values.len())?;
         self.bytes.extend_from_slice(values);
+        Ok(())
     }
 
-    pub(crate) fn write_doubles(&mut self, values: &[f64]) {
-        self.write_length(values.len());
+    pub(crate) fn write_doubles(&mut self, values: &[f64]) -> Result<(), MessageError> {
+        self.write_length(values.len())?;
         for value in values {
             let bytes = if self.big_endian {
                 value.to_be_bytes()
@@ -85,10 +90,10 @@ impl CdrWriter {
             };
             self.write_raw(8, &bytes);
         }
+        Ok(())
     }
 }
 
-#[derive(Clone)]
 pub(crate) struct CdrReader<'message> {
     header: [u8; 4],
     body: &'message [u8],
@@ -164,6 +169,10 @@ impl<'message> CdrReader<'message> {
 /// The text of a stored CDR string. Serializers differ on whether an empty
 /// string stores its terminator.
 pub(crate) fn string_text(stored: &[u8]) -> Result<String, MessageError> {
-    let text = stored.split_last().map_or(stored, |(_, text)| text);
+    let text = match stored {
+        [] => stored,
+        [text @ .., 0] if !text.contains(&0) => text,
+        _ => return Err(MessageError::Cdr("string has an invalid NUL terminator")),
+    };
     String::from_utf8(text.to_vec()).map_err(|_| MessageError::Cdr("string is not UTF-8"))
 }

@@ -15,8 +15,9 @@ The upstream writer owns format serialization; use the
 - Grouping changes physical message order. Use indexed, log-time-ordered reads
   when time order is required. Schema/channel-only chunks may contain no messages.
 - Python file-path outputs are staged and published atomically after success.
-  Caller-owned binary streams remain open. Explicitly finish Rust writers;
-  dropping a writer abandons buffered messages.
+  Successful finish writes and flushes the footer. Caller-owned Python streams
+  remain open. Dropping a writer abandons buffered messages. A partial write
+  failure prevents the writer from finalizing the archive.
 
 `GroupedWriter` and `WriterOptions` are the Rust entry points;
 `GroupedMcapWriter` is the Python adapter.

@@ -20,12 +20,19 @@ struct PythonOutput(Py<PyAny>);
 
 impl Write for PythonOutput {
     fn write(&mut self, data: &[u8]) -> io::Result<usize> {
-        Python::attach(|python| {
+        let written = Python::attach(|python| {
             self.0
                 .call_method1(python, "write", (PyBytes::new(python, data),))?
                 .extract::<usize>(python)
         })
-        .map_err(io::Error::from)
+        .map_err(io::Error::from)?;
+        if written > data.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "stream reported writing more bytes than it received",
+            ));
+        }
+        Ok(written)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -239,15 +246,11 @@ impl CompressedVideoCodec {
         let timestamp_nanoseconds = video
             .timestamp
             .map(|timestamp| {
-                timestamp
-                    .seconds
-                    .checked_mul(1_000_000_000)
-                    .and_then(|nanoseconds| nanoseconds.checked_add(timestamp.nanos.into()))
-                    .ok_or_else(|| {
-                        PyValueError::new_err(
-                            "CompressedVideo timestamp exceeds 64-bit nanoseconds",
-                        )
-                    })
+                let nanoseconds =
+                    i128::from(timestamp.seconds) * 1_000_000_000 + i128::from(timestamp.nanos);
+                i64::try_from(nanoseconds).map_err(|_| {
+                    PyValueError::new_err("CompressedVideo timestamp exceeds 64-bit nanoseconds")
+                })
             })
             .transpose()?;
         Ok(CompressedVideo {
@@ -295,6 +298,9 @@ fn encode_joint_state<'python>(
 
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    let defaults = WriterOptions::default();
+    module.add("DEFAULT_CHUNK_SIZE_BYTES", defaults.chunk_size)?;
+    module.add("DEFAULT_LIBRARY_IDENTIFIER", defaults.library)?;
     module.add_class::<NativeWriter>()?;
     module.add_function(wrap_pyfunction!(encode_compressed_video, module)?)?;
     module.add_function(wrap_pyfunction!(encode_joint_state, module)?)?;

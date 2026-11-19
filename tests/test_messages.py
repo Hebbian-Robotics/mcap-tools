@@ -214,6 +214,9 @@ def test_undecodable_video_messages_are_rejected(
         ("cdr", "ros2idl", ROS2_COMPRESSED_VIDEO_SCHEMA_NAME, ROS2_COMPRESSED_VIDEO_SCHEMA),
         ("cdr", "ros2msg", "sensor_msgs/msg/JointState", JOINT_STATE_SCHEMA),
         ("cdr", "ros2msg", "example_msgs/msg/Video", b"other_msgs/Missing value\n"),
+        ("cdr", "ros2msg", "example_msgs/msg/Video", b"bool[] data\nstring format\n"),
+        ("cdr", "ros2msg", "example_msgs/msg/Video", b"uint8[<=oops] data\nstring format\n"),
+        ("cdr", "ros2msg", "example_msgs/msg/Video", b"uint8[] data\nstring format\nstring data\n"),
     ],
 )
 def test_channels_that_cannot_carry_compressed_video_are_rejected(
@@ -221,6 +224,12 @@ def test_channels_that_cannot_carry_compressed_video_are_rejected(
 ) -> None:
     with pytest.raises(ValueError, match=r"unsupported (message encoding|schema)"):
         CompressedVideoCodec(message_encoding, schema_encoding, schema_name, schema_data)
+
+
+def test_cdr_video_rejects_an_unterminated_format() -> None:
+    encoded = encode_compressed_video(0, "front", b"frame", "h264", "cdr")
+    with pytest.raises(ValueError, match="invalid NUL terminator"):
+        _ros2_codec().decode(encoded[:-1] + b"!")
 
 
 def test_joint_state_is_readable_as_standard_ros2_cdr() -> None:

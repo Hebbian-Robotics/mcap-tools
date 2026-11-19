@@ -2,11 +2,11 @@
 use super::{
     MessageEncoding, MessageError,
     cdr::{CdrReader, CdrWriter, string_text},
-    ros2msg::{Arity, Field, FieldKind, MessageDefinitions},
+    ros2msg::{Arity, Field, FieldKind, MessageDefinitions, PrimitiveKind},
 };
 use prost::{
     Message,
-    encoding::{WireType, decode_varint, encode_key, encode_varint},
+    encoding::{DecodeContext, WireType, decode_key, encode_key, encode_varint, skip_field},
 };
 use std::str::FromStr;
 
@@ -78,26 +78,17 @@ impl CompressedVideo {
         let nanoseconds = u32::try_from(timestamp.nanos).map_err(|_| {
             MessageError::OutOfRange("CompressedVideo timestamp has negative nanoseconds")
         })?;
-        for length in [
-            self.frame_id.len().saturating_add(1),
-            self.data.len(),
-            self.format.len().saturating_add(1),
-        ] {
-            u32::try_from(length).map_err(|_| {
-                MessageError::OutOfRange("CompressedVideo field exceeds CDR length range")
-            })?;
-        }
-        if self.frame_id.contains('\0') || self.format.contains('\0') {
+        if nanoseconds >= 1_000_000_000 {
             return Err(MessageError::OutOfRange(
-                "CDR strings cannot contain embedded NUL characters",
+                "CompressedVideo timestamp nanoseconds must be below one second",
             ));
         }
         let mut cdr = CdrWriter::new();
         cdr.write_i32(seconds);
         cdr.write_u32(nanoseconds);
-        cdr.write_string(&self.frame_id);
-        cdr.write_bytes(&self.data);
-        cdr.write_string(&self.format);
+        cdr.write_string(&self.frame_id)?;
+        cdr.write_bytes(&self.data)?;
+        cdr.write_string(&self.format)?;
         Ok(cdr.into_bytes())
     }
 }
@@ -148,15 +139,19 @@ struct CdrVideoFields<'message> {
 
 fn cdr_field_role(definitions: &MessageDefinitions, field: &Field) -> FieldRole {
     match (field.name.as_str(), &field.kind, field.arity) {
-        ("data", FieldKind::Primitive(1), Arity::Sequence) => FieldRole::Data,
+        ("data", FieldKind::Primitive(PrimitiveKind::Uint8), Arity::Sequence) => FieldRole::Data,
         ("format", FieldKind::String, Arity::Single) => FieldRole::Format,
         ("frame_id", FieldKind::String, Arity::Single) => FieldRole::FrameId,
         ("timestamp", FieldKind::Message(type_name), Arity::Single)
             if matches!(
                 definitions.fields(type_name),
-                [first, second] if [first, second].iter().all(|part| {
-                    part.kind == FieldKind::Primitive(4) && part.arity == Arity::Single
-                })
+                [seconds, nanoseconds]
+                    if seconds.name == "sec"
+                        && seconds.kind == FieldKind::Primitive(PrimitiveKind::Int32)
+                        && seconds.arity == Arity::Single
+                        && nanoseconds.name == "nanosec"
+                        && nanoseconds.kind == FieldKind::Primitive(PrimitiveKind::Uint32)
+                        && nanoseconds.arity == Arity::Single
             ) =>
         {
             FieldRole::Timestamp
@@ -214,11 +209,14 @@ impl CompressedVideoCodec {
                 let timestamp = fields
                     .timestamp
                     .map(|(seconds, nanoseconds)| {
-                        Ok::<_, MessageError>(prost_types::Timestamp {
+                        if nanoseconds >= 1_000_000_000 {
+                            return Err(MessageError::Cdr(
+                                "timestamp nanoseconds must be below one second",
+                            ));
+                        }
+                        Ok(prost_types::Timestamp {
                             seconds: seconds.into(),
-                            nanos: i32::try_from(nanoseconds).map_err(|_| {
-                                MessageError::Cdr("timestamp nanoseconds exceed one second")
-                            })?,
+                            nanos: nanoseconds.cast_signed(),
                         })
                     })
                     .transpose()?;
@@ -238,9 +236,6 @@ impl CompressedVideoCodec {
         match &self.0 {
             ChannelLayout::Protobuf => replace_protobuf_data(message, data),
             ChannelLayout::Cdr { definitions, roles } => {
-                u32::try_from(data.len()).map_err(|_| {
-                    MessageError::OutOfRange("CompressedVideo field exceeds CDR length range")
-                })?;
                 let (_, rewritten) = walk_cdr_video(definitions, roles, message, Some(data))?;
                 rewritten.ok_or(MessageError::Cdr("replacement payload was not encoded"))
             }
@@ -255,7 +250,7 @@ fn walk_cdr_video<'message>(
     replacement_data: Option<&[u8]>,
 ) -> Result<(CdrVideoFields<'message>, Option<Vec<u8>>), MessageError> {
     let mut reader = CdrReader::new(message)?;
-    let mut writer = replacement_data.map(|_| CdrWriter::matching(&reader));
+    let mut writer = replacement_data.map(|data| (data, CdrWriter::matching(&reader)));
     let mut video = CdrVideoFields {
         timestamp: None,
         frame_id: &[],
@@ -263,31 +258,47 @@ fn walk_cdr_video<'message>(
         format: &[],
     };
     for (field, role) in definitions.root_fields().iter().zip(roles) {
+        let replacement = writer.as_mut().map(|(data, writer)| (*data, writer));
         match role {
             FieldRole::Data => {
                 video.data = reader.read_bytes()?;
-                if let Some(writer) = &mut writer {
-                    writer.write_bytes(replacement_data.unwrap_or(video.data));
+                if let Some((payload, writer)) = replacement {
+                    writer.write_bytes(payload)?;
                 }
-                continue;
+            }
+            FieldRole::FrameId | FieldRole::Format => {
+                let stored = reader.read_bytes()?;
+                if *role == FieldRole::FrameId {
+                    video.frame_id = stored;
+                } else {
+                    video.format = stored;
+                }
+                if let Some((_, writer)) = replacement {
+                    writer.write_bytes(stored)?;
+                }
             }
             FieldRole::Timestamp => {
-                let mut timestamp_reader = reader.clone();
-                video.timestamp =
-                    Some((timestamp_reader.read_i32()?, timestamp_reader.read_u32()?));
+                let seconds = reader.read_i32()?;
+                let nanoseconds = reader.read_u32()?;
+                video.timestamp = Some((seconds, nanoseconds));
+                if let Some((_, writer)) = replacement {
+                    writer.write_i32(seconds);
+                    writer.write_u32(nanoseconds);
+                }
             }
-            FieldRole::FrameId => video.frame_id = reader.clone().read_bytes()?,
-            FieldRole::Format => video.format = reader.clone().read_bytes()?,
-            FieldRole::Other => {}
+            FieldRole::Other => {
+                definitions.copy_field(
+                    field,
+                    &mut reader,
+                    replacement.map(|(_, writer)| writer),
+                )?;
+            }
         }
-        definitions.copy_field(field, &mut reader, &mut writer)?;
     }
-    Ok((video, writer.map(CdrWriter::into_bytes)))
+    Ok((video, writer.map(|(_, writer)| writer.into_bytes())))
 }
 
 fn replace_protobuf_data(message: &[u8], data: &[u8]) -> Result<Vec<u8>, MessageError> {
-    const TRUNCATED: MessageError =
-        MessageError::ProtobufWire("field extends past the end of the message");
     let mut rewritten = Vec::with_capacity(message.len().saturating_add(data.len()));
     let write_data = |rewritten: &mut Vec<u8>| {
         if !data.is_empty() {
@@ -304,21 +315,11 @@ fn replace_protobuf_data(message: &[u8], data: &[u8]) -> Result<Vec<u8>, Message
     let mut rest = message;
     while !rest.is_empty() {
         let field = rest;
-        let key = decode_varint(&mut rest)?;
-        let value_length = match key & 0b111 {
-            0 => {
-                decode_varint(&mut rest)?;
-                0
-            }
-            1 => 8,
-            2 => usize::try_from(decode_varint(&mut rest)?).map_err(|_| TRUNCATED)?,
-            5 => 4,
-            _ => return Err(MessageError::ProtobufWire("unsupported wire type")),
-        };
-        rest = rest.get(value_length..).ok_or(TRUNCATED)?;
-        if key >> 3 != u64::from(PROTOBUF_DATA_FIELD_NUMBER) {
+        let (field_number, wire_type) = decode_key(&mut rest)?;
+        skip_field(wire_type, field_number, &mut rest, DecodeContext::default())?;
+        if field_number != PROTOBUF_DATA_FIELD_NUMBER {
             rewritten.extend_from_slice(&field[..field.len() - rest.len()]);
-        } else if key & 0b111 != 2 {
+        } else if wire_type != WireType::LengthDelimited {
             return Err(MessageError::ProtobufWire("data field is not bytes"));
         } else if !data_written {
             write_data(&mut rewritten);
