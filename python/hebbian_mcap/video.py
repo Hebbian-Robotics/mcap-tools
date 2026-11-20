@@ -62,6 +62,15 @@ COMPRESSED_IMAGE_SCHEMAS = frozenset(
     {"foxglove.CompressedImage", "sensor_msgs/msg/CompressedImage"}
 )
 RAW_IMAGE_SCHEMAS = frozenset({"foxglove.RawImage", "sensor_msgs/msg/Image"})
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+# SOF0-SOF15 except DHT, JPG and DAC, plus the JPEG-LS SOF55 that FFmpeg's
+# MJPEG decoder also accepts.
+_JPEG_FRAME_MARKERS = frozenset(range(0xC0, 0xD0)) - {0xC4, 0xC8, 0xCC} | {0xF7}
+_JPEG_STANDALONE_MARKERS = frozenset({0x01, *range(0xD0, 0xD8)})
+_JPEG_START_OF_SCAN = 0xDA
+_JPEG_END_OF_IMAGE = 0xD9
+_FFMPEG_MAXIMUM_STRIDE_ALIGNMENT = 64
+_FFMPEG_MAXIMUM_PIXELS = 2**31 - 1
 RAW_PIXEL_FORMATS = {
     "rgb8": ("rgb24", 3),
     "bgr8": ("bgr24", 3),
@@ -261,6 +270,50 @@ def _require_dimensions(width: int, height: int, limits: CameraExportLimits) -> 
         )
 
 
+def _jpeg_frame_dimensions(payload: bytes) -> list[tuple[int, int]]:
+    if payload[:2] != b"\xff\xd8":
+        raise McapMediaError("JPEG image must start with a start-of-image marker")
+    dimensions: list[tuple[int, int]] = []
+    offset = 2
+    while offset + 2 <= len(payload):
+        if payload[offset] != 0xFF:
+            raise McapMediaError("JPEG image has a malformed marker segment")
+        marker = payload[offset + 1]
+        if marker == 0xFF:
+            offset += 1
+            continue
+        if marker in _JPEG_STANDALONE_MARKERS:
+            offset += 2
+            continue
+        if marker in (_JPEG_START_OF_SCAN, _JPEG_END_OF_IMAGE):
+            break
+        if offset + 4 > len(payload):
+            break
+        length = int.from_bytes(payload[offset + 2 : offset + 4], "big")
+        if length < 2 or offset + 2 + length > len(payload):
+            raise McapMediaError("JPEG image has a malformed marker segment")
+        if marker in _JPEG_FRAME_MARKERS:
+            if length < 8:
+                raise McapMediaError("JPEG image has a malformed frame header")
+            height = int.from_bytes(payload[offset + 5 : offset + 7], "big")
+            width = int.from_bytes(payload[offset + 7 : offset + 9], "big")
+            dimensions.append((width, height))
+        offset += 2 + length
+    if not dimensions:
+        raise McapMediaError("JPEG image has no frame header before its scan")
+    return dimensions
+
+
+def _png_frame_dimensions(payload: bytes) -> list[tuple[int, int]]:
+    if (
+        payload[:8] != _PNG_SIGNATURE
+        or payload[8:16] != b"\x00\x00\x00\x0dIHDR"
+        or len(payload) < 24
+    ):
+        raise McapMediaError("PNG image must start with its signature and IHDR header")
+    return [(int.from_bytes(payload[16:20], "big"), int.from_bytes(payload[20:24], "big"))]
+
+
 def _decode_image(message: object, kind: _CameraKind, limits: CameraExportLimits) -> av.VideoFrame:
     payload = _frame_bytes(message)
     if kind is _CameraKind.COMPRESSED_IMAGE:
@@ -268,13 +321,28 @@ def _decode_image(message: object, kind: _CameraKind, limits: CameraExportLimits
         if not isinstance(encoding, str):
             raise McapMediaError("compressed image is missing its format")
         if "jpeg" in encoding.lower() or "jpg" in encoding.lower():
-            codec_name = "mjpeg"
+            codec_name, header_dimensions = "mjpeg", _jpeg_frame_dimensions(payload)
         elif "png" in encoding.lower():
-            codec_name = "png"
+            codec_name, header_dimensions = "png", _png_frame_dimensions(payload)
         else:
             raise McapMediaError(f"unsupported compressed image format {encoding!r}")
+        for width, height in header_dimensions:
+            _require_dimensions(width, height, limits)
+        # FFmpeg checks max_pixels against the stride-aligned width before it
+        # allocates a picture, so the decoder cannot exceed the validated header
+        # even through headers this pre-check does not interpret.
+        decoder_pixel_limit = max(
+            -(-width // _FFMPEG_MAXIMUM_STRIDE_ALIGNMENT)
+            * _FFMPEG_MAXIMUM_STRIDE_ALIGNMENT
+            * height
+            for width, height in header_dimensions
+        )
         decoder = av.CodecContext.create(codec_name, "r")
         decoder.thread_count = 1
+        decoder.options = {"max_pixels": str(min(decoder_pixel_limit, _FFMPEG_MAXIMUM_PIXELS))}
+        decoder.open()
+        if "max_pixels" in decoder.options:
+            raise McapMediaError("image decoder does not support a pixel limit")
         frames = decoder.decode(av.Packet(payload))
         if len(frames) != 1 or not isinstance(frames[0], av.VideoFrame):
             raise McapMediaError("compressed image must decode to one video frame")
