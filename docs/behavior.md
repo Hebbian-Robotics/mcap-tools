@@ -63,7 +63,8 @@ preceding frame interval. Failed exports preserve the source and existing output
 reads, each chunk's decompressed size and the camera messages buffered across
 overlapping chunks. Chunks whose compression frame and MCAP header disagree on
 size are rejected before decompression. Raise the limit for recordings written
-with larger chunk targets.
+with larger chunk targets. Recordings without chunk indexes are scanned once for
+record positions, then read in log-time order.
 `PreparedMcapVideo` reports the selected topic, first log timestamp, duration and
 output path. Native decoding is synchronous; applications needing a hard deadline
 must provide process isolation.

@@ -14,11 +14,11 @@ import json
 import math
 import os
 import tempfile
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from array import array
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from enum import Enum, auto
 from fractions import Fraction
-from functools import partial
 from pathlib import Path
 from struct import error as StructError
 
@@ -229,18 +229,28 @@ class _BoundedRecordSource(io.BufferedReader):
     def read(self, size: int | None = -1, /) -> bytes:
         if size is None or size < 0 or size > self._maximum_read_bytes:
             raise McapMediaError("MCAP record exceeds the chunk byte limit")
-        if size > self._file_bytes - self.tell():
+        remaining_bytes = self._file_bytes - self.tell()
+        if remaining_bytes <= 0:
+            return b""
+        if size > remaining_bytes:
             raise McapMediaError("MCAP record extends past the end of the file")
         return super().read(size)
 
 
-def _decompress_zstd(data: bytes, size: int) -> bytes:
+_ZSTD_WINDOW_BYTES_RANGE = (1 << 10, 1 << 31)
+
+
+def _decompress_zstd(data: bytes, size: int, maximum_chunk_bytes: int) -> bytes:
     # The one-shot decompressor allocates the frame's declared content size even
     # when told a smaller output size, so stream exactly the chunk's size instead.
+    # A frame without a content size allocates its declared window, so cap that too.
+    minimum_window, maximum_window = _ZSTD_WINDOW_BYTES_RANGE
+    window_bytes = min(max(maximum_chunk_bytes, minimum_window), maximum_window)
     try:
         if zstandard.frame_content_size(data) not in (-1, size):
             raise McapMediaError("zstd frame size does not match its MCAP chunk")
-        with zstandard.ZstdDecompressor().stream_reader(data) as reader:
+        decompressor = zstandard.ZstdDecompressor(max_window_size=window_bytes)
+        with decompressor.stream_reader(data) as reader:
             output = reader.read(size)
             if reader.read(1):
                 raise McapMediaError("zstd chunk expands beyond its declared size")
@@ -264,7 +274,7 @@ def _chunk_records(chunk: Chunk, maximum_chunk_bytes: int) -> list[McapRecord]:
     if size > maximum_chunk_bytes:
         raise McapMediaError("MCAP chunk exceeds the chunk byte limit")
     if chunk.compression == "zstd":
-        data = _decompress_zstd(chunk.data, size)
+        data = _decompress_zstd(chunk.data, size, maximum_chunk_bytes)
     elif chunk.compression == "lz4":
         data = _decompress_lz4(chunk.data, size)
     elif chunk.compression == "":
@@ -276,80 +286,93 @@ def _chunk_records(chunk: Chunk, maximum_chunk_bytes: int) -> list[McapRecord]:
     return breakup_chunk(replace(chunk, compression="", data=data), validate_crc=True)
 
 
-def _indexed_chunk_records(
-    source: _BoundedRecordSource, chunk_start_offset: int, maximum_chunk_bytes: int
+def _records_at(
+    source: _BoundedRecordSource, position: int, maximum_chunk_bytes: int
 ) -> list[McapRecord]:
-    source.seek(chunk_start_offset)
-    records = StreamReader(
-        source, skip_magic=True, emit_chunks=True, record_size_limit=maximum_chunk_bytes
-    ).records
-    chunk = next(records, None)
-    if not isinstance(chunk, Chunk):
-        raise McapMediaError("MCAP chunk index does not point to a chunk")
-    return _chunk_records(chunk, maximum_chunk_bytes)
-
-
-_ChunkLoad = tuple[int, Callable[[], Iterable[McapRecord]]]
-
-
-def _indexed_chunks(
-    source: _BoundedRecordSource, summary: Summary, channel_id: int, maximum_chunk_bytes: int
-) -> Iterator[_ChunkLoad]:
-    chunk_indexes = sorted(
-        (
-            chunk_index
-            for chunk_index in summary.chunk_indexes
-            if not chunk_index.message_index_offsets
-            or channel_id in chunk_index.message_index_offsets
-        ),
-        key=lambda chunk_index: (chunk_index.message_start_time, chunk_index.chunk_start_offset),
+    source.seek(position)
+    record = next(
+        StreamReader(
+            source, skip_magic=True, emit_chunks=True, record_size_limit=maximum_chunk_bytes
+        ).records,
+        None,
     )
-    # Repeated entries would decompress one small chunk once per entry.
-    if len({chunk_index.chunk_start_offset for chunk_index in chunk_indexes}) != len(chunk_indexes):
-        raise McapMediaError("MCAP chunk index lists a chunk more than once")
-    for chunk_index in chunk_indexes:
-        yield (
-            chunk_index.message_start_time,
-            partial(
-                _indexed_chunk_records, source, chunk_index.chunk_start_offset, maximum_chunk_bytes
-            ),
-        )
+    if isinstance(record, Chunk):
+        return _chunk_records(record, maximum_chunk_bytes)
+    if isinstance(record, Message):
+        return [record]
+    raise McapMediaError("MCAP position does not hold a chunk or message")
 
 
-def _sequential_chunks(
-    source: _BoundedRecordSource, maximum_chunk_bytes: int
-) -> Iterator[_ChunkLoad]:
+def _indexed_positions(summary: Summary, channel_id: int) -> array[int]:
+    positions = array("Q")
+    offsets: set[int] = set()
+    for chunk_index in summary.chunk_indexes:
+        if (
+            chunk_index.message_index_offsets
+            and channel_id not in chunk_index.message_index_offsets
+        ):
+            continue
+        # Repeated entries would decompress one small chunk once per entry.
+        if chunk_index.chunk_start_offset in offsets:
+            raise McapMediaError("MCAP chunk index lists a chunk more than once")
+        offsets.add(chunk_index.chunk_start_offset)
+        positions.extend((chunk_index.message_start_time, chunk_index.chunk_start_offset))
+    return positions
+
+
+def _sequential_positions(
+    source: _BoundedRecordSource, channel_id: int, maximum_chunk_bytes: int
+) -> array[int]:
+    """Locate every chunk and top-level camera message without decompressing chunks.
+
+    Without chunk indexes, records can appear in any log-time order. The file is
+    scanned once for start times so records load in order on a second pass.
+    """
+    positions = array("Q")
     source.seek(0)
-    for record in StreamReader(
+    records = StreamReader(
         source, emit_chunks=True, validate_crcs=True, record_size_limit=maximum_chunk_bytes
-    ).records:
+    ).records
+    while True:
+        # Unknown records are skipped inside one step, so a position can precede
+        # them; reading from it again skips them the same way.
+        position = source.tell()
+        record = next(records, None)
+        if record is None:
+            return positions
         if isinstance(record, Chunk):
-            yield record.message_start_time, partial(_chunk_records, record, maximum_chunk_bytes)
-        elif isinstance(record, Message):
-            yield record.log_time, partial(tuple, (record,))
+            positions.extend((record.message_start_time, position))
+        elif isinstance(record, Message) and record.channel_id == channel_id:
+            positions.extend((record.log_time, position))
 
 
 def _log_time_ordered(
-    chunks: Iterator[_ChunkLoad], channel_id: int, maximum_buffered_bytes: int
+    source: _BoundedRecordSource,
+    positions: array[int],
+    channel_id: int,
+    maximum_chunk_bytes: int,
 ) -> Iterator[Message]:
-    """Yield a channel's messages by log time, loading chunks in start-time order.
+    """Yield a channel's messages by log time, loading records in start-time order.
 
-    A message waits only until no later chunk can start before it. Overlapping
-    chunks therefore stay buffered, and that buffer has the same byte limit as a chunk.
+    Positions are flat (start time, file offset) pairs. A message waits only until
+    no later record can start before it. Overlapping chunks therefore stay
+    buffered, and that buffer has the same byte limit as a chunk.
     """
+    pairs = np.frombuffer(positions, dtype=np.uint64).reshape(-1, 2)
     pending: list[tuple[int, int, Message]] = []
     buffered_bytes = 0
     arrival = itertools.count()
-    for start_time, load in chunks:
+    for index in np.lexsort((pairs[:, 1], pairs[:, 0])):
+        start_time, position = (int(value) for value in pairs[index])
         while pending and pending[0][0] < start_time:
             message = heapq.heappop(pending)[2]
             buffered_bytes -= len(message.data)
             yield message
-        for record in load():
+        for record in _records_at(source, position, maximum_chunk_bytes):
             if isinstance(record, Message) and record.channel_id == channel_id:
                 heapq.heappush(pending, (record.log_time, next(arrival), record))
                 buffered_bytes += len(record.data)
-        if buffered_bytes > maximum_buffered_bytes:
+        if buffered_bytes > maximum_chunk_bytes:
             raise McapMediaError("overlapping camera chunks exceed the chunk byte limit")
     while pending:
         yield heapq.heappop(pending)[2]
@@ -364,13 +387,13 @@ def _camera_messages(
     decoder = _camera_decoder(selected)
     maximum_frames = math.ceil(limits.maximum_duration_seconds * limits.maximum_frames_per_second)
     channel_id = selected.channel.id
-    chunks = (
-        _indexed_chunks(source, summary, channel_id, limits.maximum_chunk_bytes)
+    positions = (
+        _indexed_positions(summary, channel_id)
         if summary.chunk_indexes
-        else _sequential_chunks(source, limits.maximum_chunk_bytes)
+        else _sequential_positions(source, channel_id, limits.maximum_chunk_bytes)
     )
     for frame_count, message in enumerate(
-        _log_time_ordered(chunks, channel_id, limits.maximum_chunk_bytes), 1
+        _log_time_ordered(source, positions, channel_id, limits.maximum_chunk_bytes), 1
     ):
         if frame_count > maximum_frames:
             raise McapMediaError("camera frame count exceeds export limit")
