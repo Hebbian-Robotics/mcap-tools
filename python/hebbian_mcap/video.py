@@ -7,10 +7,14 @@ process isolation when a hard native-decoder deadline is required.
 from __future__ import annotations
 
 import base64
+import heapq
+import io
+import itertools
 import json
 import math
 import os
 import tempfile
+from array import array
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from enum import Enum, auto
@@ -19,14 +23,18 @@ from pathlib import Path
 from struct import error as StructError
 
 import av
+import lz4.frame
 import numpy as np
+import zstandard
 from av.container import OutputContainer
 from av.stream import Stream
 from av.video.codeccontext import VideoCodecContext
 from av.video.stream import VideoStream
 from mcap.exceptions import McapError
-from mcap.reader import McapReader, make_reader
-from mcap.records import Channel, Schema
+from mcap.reader import SeekingReader
+from mcap.records import Channel, Chunk, McapRecord, Message, Schema
+from mcap.stream_reader import StreamReader, breakup_chunk
+from mcap.summary import Summary
 from mcap_protobuf.decoder import DecoderFactory as ProtobufDecoderFactory
 from mcap_ros2.decoder import DecoderFactory as Ros2DecoderFactory
 
@@ -53,6 +61,9 @@ _NATIVE_VIDEO_SCHEMAS = (
 )
 
 MAXIMUM_FRAME_BYTES = 32 * 1024 * 1024
+# Fits one maximum frame as base64 JSON (4/3 of its bytes) plus the writer's
+# default 1 MiB chunk target of neighboring messages.
+DEFAULT_MAXIMUM_CHUNK_BYTES = MAXIMUM_FRAME_BYTES * 3 // 2
 NANOSECONDS_PER_SECOND = 1_000_000_000
 VIDEO_TICKS_PER_SECOND = 1_000_000
 NANOSECONDS_PER_VIDEO_TICK = NANOSECONDS_PER_SECOND // VIDEO_TICKS_PER_SECOND
@@ -86,10 +97,13 @@ class CameraExportLimits:
     maximum_frames_per_second: float = 240.0
     minimum_duration_seconds: float = 0.001
     maximum_duration_seconds: float = 86400.0
+    maximum_chunk_bytes: int = DEFAULT_MAXIMUM_CHUNK_BYTES
 
     def __post_init__(self) -> None:
         if type(self.maximum_frame_pixels) is not int or self.maximum_frame_pixels <= 0:
             raise ValueError("maximum_frame_pixels must be a positive integer")
+        if type(self.maximum_chunk_bytes) is not int or self.maximum_chunk_bytes <= 0:
+            raise ValueError("maximum_chunk_bytes must be a positive integer")
         for value in (
             self.maximum_frames_per_second,
             self.minimum_duration_seconds,
@@ -174,10 +188,7 @@ def _frame_bytes(message: object) -> bytes:
     return bytes(payload)
 
 
-def _select_camera(reader: McapReader, camera_topic: str | None) -> CameraChannel:
-    summary = reader.get_summary()
-    if summary is None:
-        raise McapMediaError("camera export requires an indexed MCAP file")
+def _select_camera(summary: Summary, camera_topic: str | None) -> CameraChannel:
     cameras = [
         channel
         for channel in summary.channels.values()
@@ -211,15 +222,187 @@ def _camera_decoder(selected: CameraChannel) -> Callable[[bytes], object]:
     raise McapMediaError("unsupported camera message encoding")
 
 
+class _BoundedRecordSource(io.BufferedReader):
+    """File for the MCAP reader that refuses reads no record could need.
+
+    The reader allocates each read from a length the recording declares, so a
+    read longer than the file's remaining bytes or than one chunk is refused
+    before any buffer exists.
+    """
+
+    def __init__(self, raw: io.FileIO, maximum_read_bytes: int) -> None:
+        super().__init__(raw)
+        self._file_bytes = os.fstat(raw.fileno()).st_size
+        self._maximum_read_bytes = maximum_read_bytes
+
+    def read(self, size: int | None = -1, /) -> bytes:
+        if size is None or size < 0 or size > self._maximum_read_bytes:
+            raise McapMediaError("MCAP record exceeds the chunk byte limit")
+        remaining_bytes = self._file_bytes - self.tell()
+        if remaining_bytes <= 0:
+            return b""
+        if size > remaining_bytes:
+            raise McapMediaError("MCAP record extends past the end of the file")
+        return super().read(size)
+
+
+_ZSTD_WINDOW_BYTES_RANGE = (1 << 10, 1 << 31)
+
+
+def _decompress_zstd(data: bytes, size: int, maximum_chunk_bytes: int) -> bytes:
+    # The one-shot decompressor allocates the frame's declared content size even
+    # when told a smaller output size, so stream exactly the chunk's size instead.
+    # A frame without a content size allocates its declared window, so cap that too.
+    minimum_window, maximum_window = _ZSTD_WINDOW_BYTES_RANGE
+    window_bytes = min(max(maximum_chunk_bytes, minimum_window), maximum_window)
+    try:
+        if zstandard.frame_content_size(data) not in (-1, size):
+            raise McapMediaError("zstd frame size does not match its MCAP chunk")
+        decompressor = zstandard.ZstdDecompressor(max_window_size=window_bytes)
+        with decompressor.stream_reader(data) as reader:
+            output = reader.read(size)
+            if reader.read(1):
+                raise McapMediaError("zstd chunk expands beyond its declared size")
+    except zstandard.ZstdError as error:
+        raise McapMediaError(f"invalid zstd chunk: {error}") from error
+    return output
+
+
+def _decompress_lz4(data: bytes, size: int) -> bytes:
+    if lz4.frame.get_frame_info(data)["content_size"] not in (0, size):
+        raise McapMediaError("lz4 frame size does not match its MCAP chunk")
+    decompressor = lz4.frame.LZ4FrameDecompressor()
+    output = decompressor.decompress(data, max_length=size + 1)
+    if not decompressor.eof:
+        raise McapMediaError("lz4 chunk is truncated or expands beyond its declared size")
+    return output
+
+
+def _chunk_records(chunk: Chunk, maximum_chunk_bytes: int) -> list[McapRecord]:
+    size = chunk.uncompressed_size
+    if size > maximum_chunk_bytes:
+        raise McapMediaError("MCAP chunk exceeds the chunk byte limit")
+    if chunk.compression == "zstd":
+        data = _decompress_zstd(chunk.data, size, maximum_chunk_bytes)
+    elif chunk.compression == "lz4":
+        data = _decompress_lz4(chunk.data, size)
+    elif chunk.compression == "":
+        data = chunk.data
+    else:
+        raise McapMediaError(f"unsupported MCAP chunk compression {chunk.compression!r}")
+    if len(data) != size:
+        raise McapMediaError("MCAP chunk size does not match its records")
+    return breakup_chunk(replace(chunk, compression="", data=data), validate_crc=True)
+
+
+def _records_at(
+    source: _BoundedRecordSource, position: int, maximum_chunk_bytes: int
+) -> list[McapRecord]:
+    source.seek(position)
+    record = next(
+        StreamReader(
+            source, skip_magic=True, emit_chunks=True, record_size_limit=maximum_chunk_bytes
+        ).records,
+        None,
+    )
+    if isinstance(record, Chunk):
+        return _chunk_records(record, maximum_chunk_bytes)
+    if isinstance(record, Message):
+        return [record]
+    raise McapMediaError("MCAP position does not hold a chunk or message")
+
+
+def _indexed_positions(summary: Summary, channel_id: int) -> array[int]:
+    positions = array("Q")
+    offsets: set[int] = set()
+    for chunk_index in summary.chunk_indexes:
+        if (
+            chunk_index.message_index_offsets
+            and channel_id not in chunk_index.message_index_offsets
+        ):
+            continue
+        # Repeated entries would decompress one small chunk once per entry.
+        if chunk_index.chunk_start_offset in offsets:
+            raise McapMediaError("MCAP chunk index lists a chunk more than once")
+        offsets.add(chunk_index.chunk_start_offset)
+        positions.extend((chunk_index.message_start_time, chunk_index.chunk_start_offset))
+    return positions
+
+
+def _sequential_positions(
+    source: _BoundedRecordSource, channel_id: int, maximum_chunk_bytes: int
+) -> array[int]:
+    """Locate every chunk and top-level camera message without decompressing chunks.
+
+    Without chunk indexes, records can appear in any log-time order. The file is
+    scanned once for start times so records load in order on a second pass.
+    """
+    positions = array("Q")
+    source.seek(0)
+    records = StreamReader(
+        source, emit_chunks=True, validate_crcs=True, record_size_limit=maximum_chunk_bytes
+    ).records
+    while True:
+        # Unknown records are skipped inside one step, so a position can precede
+        # them; reading from it again skips them the same way.
+        position = source.tell()
+        record = next(records, None)
+        if record is None:
+            return positions
+        if isinstance(record, Chunk):
+            positions.extend((record.message_start_time, position))
+        elif isinstance(record, Message) and record.channel_id == channel_id:
+            positions.extend((record.log_time, position))
+
+
+def _log_time_ordered(
+    source: _BoundedRecordSource,
+    positions: array[int],
+    channel_id: int,
+    maximum_chunk_bytes: int,
+) -> Iterator[Message]:
+    """Yield a channel's messages by log time, loading records in start-time order.
+
+    Positions are flat (start time, file offset) pairs. A message waits only until
+    no later record can start before it. Overlapping chunks therefore stay
+    buffered, and that buffer has the same byte limit as a chunk.
+    """
+    pairs = np.frombuffer(positions, dtype=np.uint64).reshape(-1, 2)
+    pending: list[tuple[int, int, Message]] = []
+    buffered_bytes = 0
+    arrival = itertools.count()
+    for index in np.lexsort((pairs[:, 1], pairs[:, 0])):
+        start_time, position = (int(value) for value in pairs[index])
+        while pending and pending[0][0] < start_time:
+            message = heapq.heappop(pending)[2]
+            buffered_bytes -= len(message.data)
+            yield message
+        for record in _records_at(source, position, maximum_chunk_bytes):
+            if isinstance(record, Message) and record.channel_id == channel_id:
+                heapq.heappush(pending, (record.log_time, next(arrival), record))
+                buffered_bytes += len(record.data)
+        if buffered_bytes > maximum_chunk_bytes:
+            raise McapMediaError("overlapping camera chunks exceed the chunk byte limit")
+    while pending:
+        yield heapq.heappop(pending)[2]
+
+
 def _camera_messages(
-    reader: McapReader,
+    source: _BoundedRecordSource,
+    summary: Summary,
     selected: CameraChannel,
     limits: CameraExportLimits,
 ) -> Iterator[tuple[int, object]]:
     decoder = _camera_decoder(selected)
     maximum_frames = math.ceil(limits.maximum_duration_seconds * limits.maximum_frames_per_second)
-    for frame_count, (_, _, message) in enumerate(
-        reader.iter_messages(topics=[selected.topic], log_time_order=True), 1
+    channel_id = selected.channel.id
+    positions = (
+        _indexed_positions(summary, channel_id)
+        if summary.chunk_indexes
+        else _sequential_positions(source, channel_id, limits.maximum_chunk_bytes)
+    )
+    for frame_count, message in enumerate(
+        _log_time_ordered(source, positions, channel_id, limits.maximum_chunk_bytes), 1
     ):
         if frame_count > maximum_frames:
             raise McapMediaError("camera frame count exceeds export limit")
@@ -485,10 +668,12 @@ def _write_camera_video(
 def _export_camera(
     source_path: Path, output_path: Path, camera_topic: str | None, limits: CameraExportLimits
 ) -> PreparedMcapVideo:
-    with source_path.open("rb") as source:
-        reader = make_reader(source, validate_crcs=True)
-        channel = _select_camera(reader, camera_topic)
-        messages = _camera_messages(reader, channel, limits)
+    with _BoundedRecordSource(io.FileIO(source_path), limits.maximum_chunk_bytes) as source:
+        summary = SeekingReader(source, record_size_limit=limits.maximum_chunk_bytes).get_summary()
+        if summary is None:
+            raise McapMediaError("camera export requires an indexed MCAP file")
+        channel = _select_camera(summary, camera_topic)
+        messages = _camera_messages(source, summary, channel, limits)
         first_message = next(messages, None)
         if first_message is None:
             raise McapMediaError(f"selected camera {channel.topic!r} has no frames")

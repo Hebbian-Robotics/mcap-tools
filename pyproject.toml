@@ -18,7 +18,7 @@ readme = "README.md"
 authors = [{ name = "Hebbian Robotics" }]
 
 [project.optional-dependencies]
-video = ["av>=18.1.0", "numpy>=2.3.5", "mcap>=1.4.0", "mcap-protobuf-support>=0.5.4", "mcap-ros2-support>=0.5.7"]
+video = ["av>=18.1.0", "lz4>=4.3.2", "numpy>=2.3.5", "mcap>=1.4.0", "mcap-protobuf-support>=0.5.4", "mcap-ros2-support>=0.5.7", "zstandard>=0.21.0"]
 
 [project.scripts]
 mcap-export = "hebbian_mcap.cli:main"
@@ -31,11 +31,13 @@ Repository = "https://github.com/Hebbian-Robotics/mcap-tools"
 [dependency-groups]
 dev = [
     "av>=18.1.0",
+    "lz4>=4.3.2",
     "numpy>=2.3.5",
     "maturin>=1.9,<2",
     "mcap>=1.4",
     "mcap-protobuf-support>=0.5.4",
     "mcap-ros2-support>=0.5.7",
+    "zstandard>=0.21.0",
     "pytest>=9",
     "ruff>=0.16",
     "ty>=0.0.74",
@@ -92,7 +94,9 @@ name = "basic writing does not require optional video dependencies"
 type = "forbidden"
 as_packages = false
 source_modules = ["hebbian_mcap", "hebbian_mcap._writer"]
-forbidden_modules = ["hebbian_mcap.video", "av", "numpy", "mcap", "mcap_protobuf", "mcap_ros2"]
+forbidden_modules = [
+    "hebbian_mcap.video", "av", "lz4", "numpy", "mcap", "mcap_protobuf", "mcap_ros2", "zstandard",
+]
 
 [[tool.importlinter.contracts]]
 name = "H264 parsing is independent of file and video adapters"

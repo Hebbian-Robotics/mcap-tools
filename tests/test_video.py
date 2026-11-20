@@ -13,7 +13,8 @@ import pytest
 from av.video.codeccontext import VideoCodecContext
 from hebbian_mcap import ROS2_COMPRESSED_VIDEO_SCHEMA, ROS2_COMPRESSED_VIDEO_SCHEMA_NAME
 from hebbian_mcap.video import CameraExportLimits, McapMediaError, export_mcap_camera
-from mcap.writer import Writer
+from mcap.reader import make_reader
+from mcap.writer import CompressionType, IndexType, Writer
 from mcap_test_helpers import write_compressed_video_mcap
 
 CAMERA_START_NS = 1_700_000_000_000_000_000
@@ -202,6 +203,46 @@ def test_image_mcap_preserves_pixels_and_ignores_unselected_cameras(
 
 
 @pytest.mark.parametrize(
+    ("use_chunking", "compression"),
+    [(True, CompressionType.ZSTD), (True, CompressionType.LZ4), (False, CompressionType.NONE)],
+)
+def test_unindexed_image_mcap_exports_frames_written_out_of_log_time_order(
+    tmp_path: Path, use_chunking: bool, compression: CompressionType
+) -> None:
+    source = tmp_path / "unordered.mcap"
+    with source.open("wb") as output:
+        writer = Writer(
+            output,
+            chunk_size=1,
+            compression=compression,
+            index_types=IndexType.ALL & ~IndexType.CHUNK,
+            use_chunking=use_chunking,
+        )
+        writer.start()
+        schema_id = writer.register_schema("foxglove.RawImage", "jsonschema", b"{}")
+        channel_id = writer.register_channel("/rgb", "json", schema_id)
+        for frame_index in (3, 1, 2, 0):
+            timestamp = CAMERA_START_NS + FRAME_TIMES_NS[frame_index]
+            pixels = np.full((16, 16, 3), frame_index * 40, dtype=np.uint8)
+            payload = {"width": 16, "height": 16, "step": 48, "encoding": "rgb8"}
+            message = json.dumps({**payload, "data": list(pixels.tobytes())}).encode()
+            writer.add_message(channel_id, timestamp, message, timestamp)
+        writer.finish()
+    with source.open("rb") as recording:
+        summary = make_reader(recording).get_summary()
+    assert summary is not None
+    assert summary.chunk_indexes == []
+
+    result = export_mcap_camera(source, tmp_path / "unordered.mp4", limits=LIMITS)
+
+    assert result.start_timestamp_ns == CAMERA_START_NS
+    assert result.duration_millis == SOURCE_DURATION_MILLIS
+    with av.open(result.video_path) as video:
+        frames = list(video.decode(video=0))
+    assert [int(frame.to_ndarray(format="rgb24")[0, 0, 0]) for frame in frames] == [0, 40, 80, 120]
+
+
+@pytest.mark.parametrize(
     ("limits", "frame_times_ns"),
     (
         (CameraExportLimits(maximum_frame_pixels=1), FRAME_TIMES_NS),
@@ -259,6 +300,19 @@ def test_camera_export_applies_the_pixel_budget_to_ordinary_compressed_images(
     with av.open(accepted.video_path) as output:
         frames = list(output.decode(video=0))
     assert [(frame.width, frame.height) for frame in frames] == [(16, 16)] * len(FRAME_TIMES_NS)
+
+
+def test_camera_export_refuses_an_ordinary_recording_over_a_low_chunk_budget(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "recording.mcap"
+    _write_h264_mcap(source)
+    destination = tmp_path / "refused.mp4"
+
+    with pytest.raises(McapMediaError, match=r"chunk byte limit|CHUNK record has length"):
+        export_mcap_camera(source, destination, limits=replace(LIMITS, maximum_chunk_bytes=768))
+
+    assert not destination.exists()
 
 
 def test_camera_export_preserves_an_existing_destination(tmp_path: Path) -> None:
