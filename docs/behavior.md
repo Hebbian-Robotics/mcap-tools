@@ -59,6 +59,11 @@ Log-time gaps are preserved to microsecond precision. The final frame uses the
 preceding frame interval. Failed exports preserve the source and existing output.
 
 `CameraExportLimits` bounds dimensions, duration and average frame rate.
+`maximum_chunk_bytes`, 48 MiB by default, bounds each MCAP record the exporter
+reads, each chunk's decompressed size and the camera messages buffered across
+overlapping chunks. Chunks whose compression frame and MCAP header disagree on
+size are rejected before decompression. Raise the limit for recordings written
+with larger chunk targets.
 `PreparedMcapVideo` reports the selected topic, first log timestamp, duration and
 output path. Native decoding is synchronous; applications needing a hard deadline
 must provide process isolation.

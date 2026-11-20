@@ -16,7 +16,15 @@ def main() -> None:
     try:
         from .video import McapMediaError, export_mcap_camera
     except ModuleNotFoundError as error:
-        if error.name not in {"av", "numpy", "mcap", "mcap_protobuf", "mcap_ros2"}:
+        if error.name not in {
+            "av",
+            "lz4",
+            "numpy",
+            "mcap",
+            "mcap_protobuf",
+            "mcap_ros2",
+            "zstandard",
+        }:
             raise
         parser.error(
             "Video export requires the optional dependencies: install 'hebbian-mcap[video]'."
