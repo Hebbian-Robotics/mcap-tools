@@ -66,7 +66,7 @@ _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 # SOF0-SOF15 except DHT, JPG and DAC, plus the JPEG-LS SOF55 that FFmpeg's
 # MJPEG decoder also accepts.
 _JPEG_FRAME_MARKERS = frozenset(range(0xC0, 0xD0)) - {0xC4, 0xC8, 0xCC} | {0xF7}
-_JPEG_STANDALONE_MARKERS = frozenset({0x01, *range(0xD0, 0xD8)})
+_JPEG_STANDALONE_MARKERS = frozenset({0x01, *range(0xD0, 0xD9)})
 _JPEG_START_OF_SCAN = 0xDA
 _JPEG_END_OF_IMAGE = 0xD9
 _FFMPEG_MAXIMUM_STRIDE_ALIGNMENT = 64
