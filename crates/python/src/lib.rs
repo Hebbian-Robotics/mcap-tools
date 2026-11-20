@@ -289,8 +289,8 @@ fn encode_joint_state<'python>(
     Ok(PyBytes::new(python, &data))
 }
 
-#[pymodule]
-fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
+#[pymodule(name = "_native")]
+fn native_module(module: &Bound<'_, PyModule>) -> PyResult<()> {
     let defaults = WriterOptions::default();
     module.add("DEFAULT_CHUNK_SIZE_BYTES", defaults.chunk_size)?;
     module.add("DEFAULT_LIBRARY_IDENTIFIER", defaults.library)?;
