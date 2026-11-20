@@ -59,6 +59,8 @@ Log-time gaps are preserved to microsecond precision. The final frame uses the
 preceding frame interval. Failed exports preserve the source and existing output.
 
 `CameraExportLimits` bounds dimensions, duration and average frame rate.
+JPEG and PNG dimensions are read from their headers and checked before decoding,
+and the decoder cannot allocate a larger picture than the checked header.
 `PreparedMcapVideo` reports the selected topic, first log timestamp, duration and
 output path. Native decoding is synchronous; applications needing a hard deadline
 must provide process isolation.

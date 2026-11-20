@@ -10,6 +10,7 @@ from pathlib import Path
 import av
 import numpy as np
 import pytest
+from av.video.codeccontext import VideoCodecContext
 from hebbian_mcap import ROS2_COMPRESSED_VIDEO_SCHEMA, ROS2_COMPRESSED_VIDEO_SCHEMA_NAME
 from hebbian_mcap.video import CameraExportLimits, McapMediaError, export_mcap_camera
 from mcap.writer import Writer
@@ -223,6 +224,41 @@ def test_rejected_mcap_leaves_original_without_publishing_output(
     assert not destination.exists()
     assert hashlib.sha256(source.read_bytes()).hexdigest() == original_digest
     assert not list(tmp_path.glob(".camera-export-*"))
+
+
+@pytest.mark.parametrize(("image_format", "codec"), [("jpeg", "mjpeg"), ("png", "png")])
+def test_camera_export_applies_the_pixel_budget_to_ordinary_compressed_images(
+    tmp_path: Path, image_format: str, codec: str
+) -> None:
+    pixels = np.zeros((16, 16, 3), dtype=np.uint8)
+    encoder = av.CodecContext.create(codec, "w")
+    assert isinstance(encoder, VideoCodecContext)
+    encoder.width = encoder.height = 16
+    encoder.pix_fmt = "yuvj420p" if codec == "mjpeg" else "rgb24"
+    frame = av.VideoFrame.from_ndarray(pixels, format="rgb24")
+    image_data = bytes(encoder.encode(frame.reformat(format=encoder.pix_fmt))[0])
+    message = json.dumps({"format": image_format, "data": list(image_data)}).encode()
+    source = tmp_path / "camera.mcap"
+    with source.open("wb") as output:
+        writer = Writer(output)
+        writer.start()
+        schema = writer.register_schema("foxglove.CompressedImage", "jsonschema", b"{}")
+        channel = writer.register_channel("/camera", "json", schema)
+        for timestamp in FRAME_TIMES_NS:
+            writer.add_message(channel, timestamp, message, timestamp)
+        writer.finish()
+
+    refused_output = tmp_path / "refused.mp4"
+    with pytest.raises(
+        McapMediaError, match="frame dimensions 16x16 are outside the export limits"
+    ):
+        export_mcap_camera(source, refused_output, limits=replace(LIMITS, maximum_frame_pixels=255))
+    assert not refused_output.exists()
+
+    accepted = export_mcap_camera(source, tmp_path / "accepted.mp4", limits=LIMITS)
+    with av.open(accepted.video_path) as output:
+        frames = list(output.decode(video=0))
+    assert [(frame.width, frame.height) for frame in frames] == [(16, 16)] * len(FRAME_TIMES_NS)
 
 
 def test_camera_export_preserves_an_existing_destination(tmp_path: Path) -> None:
