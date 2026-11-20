@@ -23,9 +23,10 @@ _SLICE_HEADER_NAL_TYPES = frozenset({1, 2, 5})
 # values; 16 bytes is enough at any legal macroblock index. A NAL whose slice header needs more is
 # caught by the head-too-short fallback in the scan.
 _SLICE_HEADER_HEAD_BYTES = 16
-# H.264 limits ue(v) values to 2**32 - 2 (31 leading zero bits). Wider runs
-# are rejected before their suffix is read, so a hostile slice cannot make the
-# decoder build an integer as long as the NAL unit.
+# Exp-Golomb values with more than 32 leading zero bits are rejected before
+# their suffix is read, so a hostile slice cannot make the decoder build an
+# integer as long as the NAL unit. Legal H.264 ue(v) values need at most 31
+# (the largest is 2**32 - 2), so the limit refuses only malformed headers.
 _MAX_EXP_GOLOMB_LEADING_ZEROS = 32
 # Annex B AUD with primary_pic_type 7 (any I/P/B picture), followed by the
 # required RBSP stop bit. x264 writes the narrower ``09 10`` for the streams
@@ -99,6 +100,17 @@ def _remove_emulation_prevention_bytes(ebsp: Iterable[int]) -> bytes:
 class _ExpGolombFailure(StrEnum):
     MISSING_STOP_BIT = "slice header has no complete first_mb_in_slice value"
     TRUNCATED_SUFFIX = "slice header truncates its first_mb_in_slice value"
+    TOO_WIDE = (
+        "slice header has an Exp-Golomb value with more than "
+        f"{_MAX_EXP_GOLOMB_LEADING_ZEROS} leading zero bits"
+    )
+
+
+# Failures a 16-byte head can cause by ending before the value does. A value
+# that is too wide is too wide in every longer prefix as well.
+_INCOMPLETE_HEADER_FAILURES = frozenset(
+    {_ExpGolombFailure.MISSING_STOP_BIT, _ExpGolombFailure.TRUNCATED_SUFFIX}
+)
 
 
 def _decode_unsigned_exp_golomb_at(
@@ -109,7 +121,7 @@ def _decode_unsigned_exp_golomb_at(
     leading_zero_bits = 0
     while True:
         if leading_zero_bits > _MAX_EXP_GOLOMB_LEADING_ZEROS:
-            return _ExpGolombFailure.TRUNCATED_SUFFIX
+            return _ExpGolombFailure.TOO_WIDE
         if bit_offset + leading_zero_bits >= bit_count:
             return _ExpGolombFailure.MISSING_STOP_BIT
         byte = rbsp[(bit_offset + leading_zero_bits) // 8]
@@ -129,8 +141,8 @@ def _decode_unsigned_exp_golomb_at(
 
 class _SliceHeader(NamedTuple):
     first_mb_in_slice: int
-    # Counting pictures only needs the first field, even when slice_type is truncated.
-    slice_type: int | None
+    # Counting pictures only needs the first field, even when slice_type fails.
+    slice_type: int | _ExpGolombFailure
 
 
 def _parse_slice_header(rbsp: bytes) -> _SliceHeader | _ExpGolombFailure:
@@ -139,12 +151,20 @@ def _parse_slice_header(rbsp: bytes) -> _SliceHeader | _ExpGolombFailure:
         return first_field
     first_mb_in_slice, next_bit_offset = first_field
     slice_type_field = _decode_unsigned_exp_golomb_at(rbsp, next_bit_offset)
-    slice_type = None if isinstance(slice_type_field, _ExpGolombFailure) else slice_type_field[0]
+    slice_type = (
+        slice_type_field if isinstance(slice_type_field, _ExpGolombFailure) else slice_type_field[0]
+    )
     return _SliceHeader(first_mb_in_slice, slice_type)
 
 
+def _slice_header_failure(header: _SliceHeader | _ExpGolombFailure) -> _ExpGolombFailure | None:
+    if isinstance(header, _ExpGolombFailure):
+        return header
+    return header.slice_type if isinstance(header.slice_type, _ExpGolombFailure) else None
+
+
 def _iter_slice_headers(stream: bytes) -> Iterator[_SliceHeader | _ExpGolombFailure]:
-    """Read both slice fields, using the full RBSP only when the head is too short."""
+    """Read both slice fields, using the full RBSP only when the head ends too early."""
     stream_view = memoryview(stream)
     nal_offsets_and_types = annex_b_nal_offsets_and_types(stream)
     for nal_index, (nal_start_offset, nal_type) in enumerate(nal_offsets_and_types):
@@ -158,7 +178,10 @@ def _iter_slice_headers(stream: bytes) -> Iterator[_SliceHeader | _ExpGolombFail
         header_offset = nal_header_offset(stream, nal_start_offset)
         slice_payload = stream_view[header_offset + 1 : nal_end_offset]
         header = _parse_slice_header(_unescape_ebsp_head(slice_payload, _SLICE_HEADER_HEAD_BYTES))
-        if isinstance(header, _ExpGolombFailure) or header.slice_type is None:
+        if (
+            len(slice_payload) > _SLICE_HEADER_HEAD_BYTES
+            and _slice_header_failure(header) in _INCOMPLETE_HEADER_FAILURES
+        ):
             header = _parse_slice_header(_remove_emulation_prevention_bytes(slice_payload))
         yield header
 
@@ -217,6 +240,15 @@ def scan_picture_coding_types(stream: bytes) -> PictureCodingScan:
     return scanner.result()
 
 
+def _unclassifiable_slice_header(failure: _ExpGolombFailure) -> ValueError:
+    reason = (
+        failure.value
+        if failure is _ExpGolombFailure.TOO_WIDE
+        else "a slice header is incomplete or truncated"
+    )
+    return ValueError(f"{reason}; picture coding types cannot be classified")
+
+
 @dataclass
 class PictureCodingScanner:
     """Accumulate the existing slice-header evidence across access units."""
@@ -230,14 +262,14 @@ class PictureCodingScanner:
 
     def update(self, access_unit: bytes) -> None:
         for slice_header in _iter_slice_headers(access_unit):
-            if isinstance(slice_header, _ExpGolombFailure) or slice_header.slice_type is None:
-                raise ValueError(
-                    "a slice header is incomplete or truncated; picture coding types "
-                    "cannot be classified"
-                )
-            if not 0 <= slice_header.slice_type <= 9:
-                raise ValueError(f"invalid slice_type {slice_header.slice_type}")
-            if slice_header.first_mb_in_slice == 0:
+            if isinstance(slice_header, _ExpGolombFailure):
+                raise _unclassifiable_slice_header(slice_header)
+            first_mb_in_slice, slice_type = slice_header
+            if isinstance(slice_type, _ExpGolombFailure):
+                raise _unclassifiable_slice_header(slice_type)
+            if not 0 <= slice_type <= 9:
+                raise ValueError(f"invalid slice_type {slice_type}")
+            if first_mb_in_slice == 0:
                 self.picture_count += 1
                 self._preceding_b_run = self.trailing_b_pictures
                 self.trailing_b_pictures = 0
@@ -247,7 +279,7 @@ class PictureCodingScanner:
                     "a slice header claims first_mb_in_slice > 0 before any picture starts; "
                     "picture coding types cannot be classified"
                 )
-            if slice_header.slice_type % 5 == 1 and not self._picture_is_b:
+            if slice_type % 5 == 1 and not self._picture_is_b:
                 self._picture_is_b = True
                 self.b_picture_count += 1
                 self.trailing_b_pictures = self._preceding_b_run + 1
