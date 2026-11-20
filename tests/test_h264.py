@@ -176,13 +176,12 @@ def test_scan_and_count_agree_on_multi_slice_and_escape_heavy_streams() -> None:
             consecutive_zeros = consecutive_zeros + 1 if byte == 0 else 0
         return bytes(encoded)
 
-    # first_mb_in_slice = 2**70 encodes as 70 leading zero bits, so its
-    # header starts with eight 0x00 bytes and needs 141 bits in total: the
-    # escapes push the header past what a 16-byte head can unescape, and
-    # only the full-payload fallback can decode it. It appears as the second
-    # slice of a picture, since a picture's first slice always carries 0.
-    wide_rbsp = _slice_header_rbsp(2**70, 7)
-    assert wide_rbsp.startswith(b"\x00" * 8)
+    # first_mb_in_slice = 2**32 - 1 encodes as 32 leading zero bits, the
+    # widest run the decoder accepts, so its header starts with four 0x00
+    # bytes that the encoder must escape. It appears as the second slice of
+    # a picture, since a picture's first slice always carries 0.
+    wide_rbsp = _slice_header_rbsp(2**32 - 1, 7)
+    assert wide_rbsp.startswith(b"\x00" * 4)
     escape_stream = b"".join(
         b"\x00\x00\x00\x01\x41" + escape_prevention_bytes(rbsp)
         for rbsp in (

@@ -23,6 +23,10 @@ _SLICE_HEADER_NAL_TYPES = frozenset({1, 2, 5})
 # values; 16 bytes is enough at any legal macroblock index. A NAL whose slice header needs more is
 # caught by the head-too-short fallback in the scan.
 _SLICE_HEADER_HEAD_BYTES = 16
+# H.264 limits ue(v) values to 2**32 - 2 (31 leading zero bits). Wider runs
+# are rejected before their suffix is read, so a hostile slice cannot make the
+# decoder build an integer as long as the NAL unit.
+_MAX_EXP_GOLOMB_LEADING_ZEROS = 32
 # Annex B AUD with primary_pic_type 7 (any I/P/B picture), followed by the
 # required RBSP stop bit. x264 writes the narrower ``09 10`` for the streams
 # encoders produce; repair deliberately uses the permissive value because it must
@@ -104,6 +108,8 @@ def _decode_unsigned_exp_golomb_at(
     bit_count = len(rbsp) * 8
     leading_zero_bits = 0
     while True:
+        if leading_zero_bits > _MAX_EXP_GOLOMB_LEADING_ZEROS:
+            return _ExpGolombFailure.TRUNCATED_SUFFIX
         if bit_offset + leading_zero_bits >= bit_count:
             return _ExpGolombFailure.MISSING_STOP_BIT
         byte = rbsp[(bit_offset + leading_zero_bits) // 8]
