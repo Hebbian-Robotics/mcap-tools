@@ -12,7 +12,8 @@ import numpy as np
 import pytest
 from hebbian_mcap import ROS2_COMPRESSED_VIDEO_SCHEMA, ROS2_COMPRESSED_VIDEO_SCHEMA_NAME
 from hebbian_mcap.video import CameraExportLimits, McapMediaError, export_mcap_camera
-from mcap.writer import Writer
+from mcap.reader import make_reader
+from mcap.writer import IndexType, Writer
 from mcap_test_helpers import write_compressed_video_mcap
 
 CAMERA_START_NS = 1_700_000_000_000_000_000
@@ -198,6 +199,42 @@ def test_image_mcap_preserves_pixels_and_ignores_unselected_cameras(
         assert frame.time_base is not None
         assert frame.pts * frame.time_base == Fraction((timestamp + 500) // 1000, 1_000_000)
         np.testing.assert_array_equal(frame.to_ndarray(format="rgb24"), pixels)
+
+
+@pytest.mark.parametrize("use_chunking", [True, False])
+def test_unindexed_image_mcap_exports_frames_written_out_of_log_time_order(
+    tmp_path: Path, use_chunking: bool
+) -> None:
+    source = tmp_path / "unordered.mcap"
+    with source.open("wb") as output:
+        writer = Writer(
+            output,
+            chunk_size=1,
+            index_types=IndexType.ALL & ~IndexType.CHUNK,
+            use_chunking=use_chunking,
+        )
+        writer.start()
+        schema_id = writer.register_schema("foxglove.RawImage", "jsonschema", b"{}")
+        channel_id = writer.register_channel("/rgb", "json", schema_id)
+        for frame_index in (3, 1, 2, 0):
+            timestamp = CAMERA_START_NS + FRAME_TIMES_NS[frame_index]
+            pixels = np.full((16, 16, 3), frame_index * 40, dtype=np.uint8)
+            payload = {"width": 16, "height": 16, "step": 48, "encoding": "rgb8"}
+            message = json.dumps({**payload, "data": list(pixels.tobytes())}).encode()
+            writer.add_message(channel_id, timestamp, message, timestamp)
+        writer.finish()
+    with source.open("rb") as recording:
+        summary = make_reader(recording).get_summary()
+    assert summary is not None
+    assert summary.chunk_indexes == []
+
+    result = export_mcap_camera(source, tmp_path / "unordered.mp4", limits=LIMITS)
+
+    assert result.start_timestamp_ns == CAMERA_START_NS
+    assert result.duration_millis == SOURCE_DURATION_MILLIS
+    with av.open(result.video_path) as video:
+        frames = list(video.decode(video=0))
+    assert [int(frame.to_ndarray(format="rgb24")[0, 0, 0]) for frame in frames] == [0, 40, 80, 120]
 
 
 @pytest.mark.parametrize(
